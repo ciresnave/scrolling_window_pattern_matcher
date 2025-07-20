@@ -20,11 +20,7 @@
 //!     PatternElem::Value(1),
 //!     PatternElem::Matcher(Box::new(|x: &i32| *x == 2)),
 //! ];
-//! let matcher = ScrollingWindowPatternMatcherRef {
-//!     window: std::collections::VecDeque::new(),
-//!     max_pattern_len: 0,
-//!     next_index: 0,
-//! };
+//! let matcher = ScrollingWindowPatternMatcherRef::new(4);
 //! let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
 //! assert!(matches.contains(&(0, 0)));
 //! assert!(matches.contains(&(1, 1)));
@@ -33,18 +29,14 @@
 //! ## Function-only Patterns
 //!
 //! ```rust
-//! use scrolling_window_pattern_matcher::ScrollingWindowPatternMatcherRef;
+//! use scrolling_window_pattern_matcher::ScrollingWindowFunctionPatternMatcherRef;
 //! let window = vec![&1, &2, &3, &4];
 //! let patterns_fn: Vec<Box<dyn Fn(&i32) -> bool>> = vec![
 //!     Box::new(|x| *x == 1),
 //!     Box::new(|x| *x == 4),
 //! ];
-//! let matcher = ScrollingWindowPatternMatcherRef {
-//!     window: std::collections::VecDeque::new(),
-//!     max_pattern_len: 0,
-//!     next_index: 0,
-//! };
-//! let matches = matcher.find_matches_functions_only(&window, &patterns_fn[..], false, None::<fn(usize, usize)>);
+//! let matcher = ScrollingWindowFunctionPatternMatcherRef::new(4);
+//! let matches = matcher.find_matches(&window, &patterns_fn[..], false, None::<fn(usize, usize)>);
 //! assert!(matches.contains(&(0, 0)));
 //! assert!(matches.contains(&(1, 3)));
 //! ```
@@ -59,11 +51,7 @@
 //! use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem};
 //! let window = vec![&1, &2, &3];
 //! let patterns = vec![PatternElem::Value(2)];
-//! let matcher = ScrollingWindowPatternMatcherRef {
-//!     window: std::collections::VecDeque::new(),
-//!     max_pattern_len: 0,
-//!     next_index: 0,
-//! };
+//! let matcher = ScrollingWindowPatternMatcherRef::new(3);
 //! let mut called = false;
 //! let _ = matcher.find_matches(&window, &patterns, false, Some(|pid, idx| {
 //!     assert_eq!(pid, 0);
@@ -182,22 +170,47 @@ impl<'a, T: PartialEq> ScrollingWindowPatternMatcherRef<'a, T> {
     }
 }
 
-impl<'a, T> ScrollingWindowPatternMatcherRef<'a, T> {
+/// A function-only pattern matcher that scrolls through a queue of items of type `T`.
+pub struct ScrollingWindowFunctionPatternMatcherRef<'a, T> {
+    window: VecDeque<(u64, &'a T)>,
+    max_pattern_len: usize,
+    next_index: u64,
+}
+
+impl<'a, T> ScrollingWindowFunctionPatternMatcherRef<'a, T> {
+    /// Create a new matcher for function-only patterns (no PartialEq bound required).
+    pub fn new(max_pattern_len: usize) -> Self {
+        Self {
+            window: VecDeque::with_capacity(max_pattern_len),
+            max_pattern_len,
+            next_index: 0,
+        }
+    }
+
+    /// Push a new item into the window, maintaining the max size.
+    pub fn push(&mut self, item: &'a T) {
+        if self.window.len() == self.max_pattern_len {
+            self.window.pop_front();
+        }
+        self.window.push_back((self.next_index, item));
+        self.next_index += 1;
+    }
+
     /// Find matches using only function patterns (no PartialEq bound required)
-    pub fn find_matches_functions_only<'b, F>(
+    pub fn find_matches<'b, F>(
         &self,
         window: &'b [&'a T],
         patterns: &[Box<dyn Fn(&T) -> bool>],
         deduplicate: bool,
         mut on_match: Option<F>,
-    ) -> Vec<(PatternId, usize)>
+    ) -> Vec<(usize, usize)>
     where
-        F: FnMut(PatternId, usize),
+        F: FnMut(usize, usize),
     {
         let mut matches = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for (pat_id, pattern) in patterns.iter().enumerate() {
-            let pat_len = 1; // Each function pattern is a single element
+            let pat_len = 1;
             if pat_len == 0 || pat_len > window.len() {
                 continue;
             }
@@ -279,16 +292,12 @@ mod tests {
 
     #[test]
     fn test_value_and_function_patterns() {
-        let matcher = ScrollingWindowPatternMatcherRef {
-            window: VecDeque::new(),
-            max_pattern_len: 0,
-            next_index: 0,
-        };
         let window = vec![&1, &2, &3, &4];
         let patterns = vec![
             PatternElem::Value(1),
             PatternElem::Matcher(Box::new(|x: &i32| *x == 2)),
         ];
+        let matcher = ScrollingWindowPatternMatcherRef::new(4);
         let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
         assert!(matches.contains(&(0, 0)));
         assert!(matches.contains(&(1, 1)));
@@ -296,17 +305,13 @@ mod tests {
 
     #[test]
     fn test_function_only_patterns() {
-        let matcher = ScrollingWindowPatternMatcherRef {
-            window: VecDeque::new(),
-            max_pattern_len: 0,
-            next_index: 0,
-        };
         let window = vec![&1, &2, &3, &4];
         let patterns_fn: Vec<Box<dyn Fn(&i32) -> bool>> = vec![
             Box::new(|x| *x == 1),
             Box::new(|x| *x == 4),
         ];
-        let matches = matcher.find_matches_functions_only(&window, &patterns_fn[..], false, None::<fn(usize, usize)>);
+        let matcher = ScrollingWindowFunctionPatternMatcherRef::new(4);
+        let matches = matcher.find_matches(&window, &patterns_fn[..], false, None::<fn(usize, usize)>);
         assert!(matches.contains(&(0, 0)));
         assert!(matches.contains(&(1, 3)));
     }
@@ -348,26 +353,22 @@ mod tests {
 
     #[test]
     fn test_function_only_edge_cases() {
-        let matcher = ScrollingWindowPatternMatcherRef {
+        let matcher = ScrollingWindowFunctionPatternMatcherRef {
             window: VecDeque::new(),
             max_pattern_len: 0,
             next_index: 0,
         };
         let window: Vec<&i32> = vec![];
         let patterns_fn: Vec<Box<dyn Fn(&i32) -> bool>> = vec![Box::new(|_| true)];
-        let matches = matcher.find_matches_functions_only(&window, &patterns_fn[..], false, None::<fn(usize, usize)>);
+        let matches = matcher.find_matches(&window, &patterns_fn[..], false, None::<fn(usize, usize)>);
         assert!(matches.is_empty());
     }
 
     #[test]
     fn test_callback_invocation() {
-        let matcher = ScrollingWindowPatternMatcherRef {
-            window: VecDeque::new(),
-            max_pattern_len: 0,
-            next_index: 0,
-        };
         let window = vec![&1, &2, &3];
         let patterns = vec![PatternElem::Value(2)];
+        let matcher = ScrollingWindowPatternMatcherRef::new(3);
         let mut called = false;
         let _ = matcher.find_matches(&window, &patterns, false, Some(|pid, idx| {
             assert_eq!(pid, 0);

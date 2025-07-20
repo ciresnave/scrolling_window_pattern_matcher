@@ -21,11 +21,7 @@ let patterns = vec![
     PatternElem::Value(1),
     PatternElem::Matcher(Box::new(|x: &i32| *x == 2)),
 ];
-let matcher = ScrollingWindowPatternMatcherRef {
-    window: std::collections::VecDeque::new(),
-    max_pattern_len: 0,
-    next_index: 0,
-};
+let matcher = ScrollingWindowPatternMatcherRef::new(4);
 let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
 assert!(matches.contains(&(0, 0)));
 assert!(matches.contains(&(1, 1)));
@@ -34,18 +30,14 @@ assert!(matches.contains(&(1, 1)));
 ## Function-only Patterns
 
 ```rust
-use scrolling_window_pattern_matcher::ScrollingWindowPatternMatcherRef;
+use scrolling_window_pattern_matcher::ScrollingWindowFunctionPatternMatcherRef;
 let window = vec![&1, &2, &3, &4];
 let patterns_fn: Vec<Box<dyn Fn(&i32) -> bool>> = vec![
     Box::new(|x| *x == 1),
     Box::new(|x| *x == 4),
 ];
-let matcher = ScrollingWindowPatternMatcherRef {
-    window: std::collections::VecDeque::new(),
-    max_pattern_len: 0,
-    next_index: 0,
-};
-let matches = matcher.find_matches_functions_only(&window, &patterns_fn[..], false, None::<fn(usize, usize)>);
+let matcher = ScrollingWindowFunctionPatternMatcherRef::new(4);
+let matches = matcher.find_matches(&window, &patterns_fn[..], false, None::<fn(usize, usize)>);
 assert!(matches.contains(&(0, 0)));
 assert!(matches.contains(&(1, 3)));
 ```
@@ -60,11 +52,7 @@ Set `deduplicate` to `true` to avoid reporting the same match more than once.
 use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem};
 let window = vec![&1, &2, &3];
 let patterns = vec![PatternElem::Value(2)];
-let matcher = ScrollingWindowPatternMatcherRef {
-    window: std::collections::VecDeque::new(),
-    max_pattern_len: 0,
-    next_index: 0,
-};
+let matcher = ScrollingWindowPatternMatcherRef::new(3);
 let mut called = false;
 let _ = matcher.find_matches(&window, &patterns, false, Some(|pid, idx| {
     assert_eq!(pid, 0);
@@ -81,7 +69,7 @@ assert!(called);
 
 ## API
 
-- `find_matches`: Use for value or mixed patterns (requires PartialEq for T)
-- `find_matches_functions_only`: Use for function-only patterns (no trait bound required)
+- `ScrollingWindowPatternMatcherRef::find_matches`: Use for value or mixed patterns (requires PartialEq for T)
+- `ScrollingWindowFunctionPatternMatcherRef::find_matches`: Use for function-only patterns (no trait bound required)
 
 See the test module for more comprehensive examples and edge cases.
