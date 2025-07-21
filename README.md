@@ -62,6 +62,52 @@ assert!(results.contains(&vec![1, 2]));
 assert!(results.contains(&vec![2, 1]));
 ```
 
+## Usage: Function-Only Patterns (New API)
+
+```rust
+use scrolling_window_pattern_matcher::ScrollingWindowFunctionPatternMatcherRef;
+let window = vec![&1, &2, &3, &4];
+let patterns_fn: Vec<Vec<Box<dyn Fn(&i32) -> bool>>> = vec![
+    vec![Box::new(|x| *x == 1)],
+    vec![Box::new(|x| *x == 4)],
+];
+let matcher = ScrollingWindowFunctionPatternMatcherRef::new(4);
+let matches = matcher.find_matches(&window, &patterns_fn, false, None::<fn(usize, usize)>);
+assert!(matches.contains(&(0, 0)));
+assert!(matches.contains(&(1, 3)));
+```
+
+## Usage: Function-Only Patterns with Callbacks and Overlap
+
+```rust
+use scrolling_window_pattern_matcher::{ScrollingWindowFunctionPatternMatcherRef, PatternWithCallbackFn};
+use std::rc::Rc;
+use std::cell::RefCell;
+let window = vec![&1, &2, &3, &4, &5];
+let results: Rc<RefCell<Vec<Vec<i32>>>> = Rc::new(RefCell::new(vec![]));
+let results1 = results.clone();
+let results2 = results.clone();
+let patterns = vec![
+    PatternWithCallbackFn {
+        pattern: vec![Box::new(|x: &i32| *x == 1), Box::new(|x: &i32| *x == 2)],
+        callback: Box::new(move |matched| results1.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>())),
+        allow_overlap_with_others: false,
+        allow_others_to_overlap: true,
+    },
+    PatternWithCallbackFn {
+        pattern: vec![Box::new(|x: &i32| *x == 2), Box::new(|x: &i32| *x == 3)],
+        callback: Box::new(move |matched| results2.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>())),
+        allow_overlap_with_others: true,
+        allow_others_to_overlap: false,
+    },
+];
+let matcher = ScrollingWindowFunctionPatternMatcherRef::new(4);
+matcher.find_matches_with_callbacks(&window, &patterns);
+let results = results.borrow();
+assert!(results.contains(&vec![1, 2]));
+assert!(results.contains(&vec![2, 3]));
+```
+
 ## Overlap Settings
 
 - `allow_overlap_with_others`: If false, this pattern will not match if it would overlap with any previous match.
@@ -97,3 +143,13 @@ Debug logs provide detailed information about matcher execution, pattern matchin
 - `ScrollingWindowFunctionPatternMatcherRef::find_matches_with_callbacks`: Function-only patterns with per-pattern callbacks and overlap settings.
 
 See the test module for more comprehensive examples and edge cases.
+
+## Edge Cases
+
+- Empty window or patterns: returns no matches
+- Patterns can be all values, all functions, or mixed
+- Multiple patterns and multi-element patterns supported
+- Deduplication and overlap settings can be combined
+- Patterns of length 1 and longer are supported
+- Overlap exclusion can prevent some matches (see tests)
+- Function-only API works for any type, even if T does not implement PartialEq
