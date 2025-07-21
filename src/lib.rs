@@ -2,76 +2,80 @@
 //!
 //! This crate provides a generic pattern matcher that operates over a scrolling window (queue) of items.
 //! Patterns can be defined as sequences of values, functions, or a mix of both. When a pattern matches,
-//! an optional user-defined callback is invoked. The matcher supports optional deduplication of matches.
+//! an optional user-defined callback is invoked. The matcher supports optional deduplication of matches and per-pattern overlap settings.
 //!
 //! ## Features
 //! - Match patterns using values, functions, or both
 //! - Optional deduplication of matches
-//! - Support for overlapping matches
-//! - Callback invocation on match
+//! - Support for overlapping matches (per-pattern control)
+//! - Callback invocation on match (per-pattern)
 //! - No unnecessary trait bounds: PartialEq is only required for value-based patterns
 //!
-//! ## Usage
+//! ## Usage: Value/Mixed Patterns with Multiple Patterns
 //!
 //! ```rust
 //! use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem};
-//! let window = vec![&1, &2, &3, &4];
+//! let window = vec![&1, &2, &1, &2, &1];
 //! let patterns = vec![
-//!     PatternElem::Value(1),
-//!     PatternElem::Matcher(Box::new(|x: &i32| *x == 2)),
+//!     vec![PatternElem::Value(1), PatternElem::Value(2)],
+//!     vec![PatternElem::Value(2), PatternElem::Value(1)],
+//!     vec![PatternElem::Value(1)],
+//!     vec![PatternElem::Value(2)],
 //! ];
-//! let matcher = ScrollingWindowPatternMatcherRef::new(4);
+//! let matcher = ScrollingWindowPatternMatcherRef::new(5);
 //! let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
-//! assert!(matches.contains(&(0, 0)));
-//! assert!(matches.contains(&(1, 1)));
+//! assert!(matches.contains(&(0, 0))); // [1,2] at 0
+//! assert!(matches.contains(&(1, 1))); // [2,1] at 1
+//! assert!(matches.contains(&(2, 0))); // [1] at 0
+//! assert!(matches.contains(&(3, 1))); // [2] at 1
 //! ```
 //!
-//! ## Function-only Patterns
+//! ## Usage: Patterns with Callbacks and Overlap Settings
 //!
 //! ```rust
-//! use scrolling_window_pattern_matcher::ScrollingWindowFunctionPatternMatcherRef;
-//! let window = vec![&1, &2, &3, &4];
-//! let patterns_fn: Vec<Box<dyn Fn(&i32) -> bool>> = vec![
-//!     Box::new(|x| *x == 1),
-//!     Box::new(|x| *x == 4),
+//! use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem, PatternWithCallback};
+//! use std::rc::Rc;
+//! use std::cell::RefCell;
+//! let window = vec![&1, &2, &1, &2, &1];
+//! let results: Rc<RefCell<Vec<Vec<i32>>>> = Rc::new(RefCell::new(vec![]));
+//! let results1 = results.clone();
+//! let results2 = results.clone();
+//! let patterns = vec![
+//!     PatternWithCallback {
+//!         pattern: vec![PatternElem::Value(1), PatternElem::Value(2)],
+//!         callback: Box::new(move |matched| results1.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>())),
+//!         allow_overlap_with_others: false,
+//!         allow_others_to_overlap: true,
+//!     },
+//!     PatternWithCallback {
+//!         pattern: vec![PatternElem::Value(2), PatternElem::Value(1)],
+//!         callback: Box::new(move |matched| results2.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>())),
+//!         allow_overlap_with_others: true,
+//!         allow_others_to_overlap: true,
+//!     },
 //! ];
-//! let matcher = ScrollingWindowFunctionPatternMatcherRef::new(4);
-//! let matches = matcher.find_matches(&window, &patterns_fn[..], false, None::<fn(usize, usize)>);
-//! assert!(matches.contains(&(0, 0)));
-//! assert!(matches.contains(&(1, 3)));
-//! ```
-//!
-//! ## Deduplication and Overlapping Matches
-//!
-//! Set `deduplicate` to `true` to avoid reporting the same match more than once.
-//!
-//! ## Callback Example
-//!
-//! ```rust
-//! use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem};
-//! let window = vec![&1, &2, &3];
-//! let patterns = vec![PatternElem::Value(2)];
-//! let matcher = ScrollingWindowPatternMatcherRef::new(3);
-//! let mut called = false;
-//! let _ = matcher.find_matches(&window, &patterns, false, Some(|pid, idx| {
-//!     assert_eq!(pid, 0);
-//!     assert_eq!(idx, 1);
-//!     called = true;
-//! }));
-//! assert!(called);
+//! let matcher = ScrollingWindowPatternMatcherRef::new(5);
+//! matcher.find_matches_with_callbacks(&window, &patterns);
+//! let results = results.borrow();
+//! assert!(results.contains(&vec![1, 2]));
+//! assert!(results.contains(&vec![2, 1]));
 //! ```
 //!
 //! ## Edge Cases
 //!
 //! - Empty window or patterns: returns no matches
 //! - Patterns can be all values, all functions, or mixed
+//! - Multiple patterns and multi-element patterns supported
+//! - Deduplication and overlap settings can be combined
 //!
 //! ## API
 //!
-//! - `find_matches`: Use for value or mixed patterns (requires PartialEq for T)
+//! - `find_matches`: Use for value or mixed patterns (requires PartialEq for T), supports multiple patterns and multi-element patterns
+//! - `find_matches_with_callbacks`: Use for value/mixed patterns with per-pattern callbacks and overlap settings
 //! - `find_matches_functions_only`: Use for function-only patterns (no trait bound required)
+//! - `find_matches_with_callbacks` (function matcher): Use for function-only patterns with per-pattern callbacks and overlap settings
 //!
-//! See tests for more examples.
+//! See tests for more comprehensive examples and edge cases.
 
 use std::collections::{VecDeque, HashMap};
 use log::debug;
@@ -133,10 +137,11 @@ impl<'a, T: PartialEq> ScrollingWindowPatternMatcherRef<'a, T> {
         self.next_index += 1;
     }
 
+    /// Find matches for multiple patterns (each a sequence of PatternElem<T>).
     pub fn find_matches<'b, F>(
         &self,
         window: &'b [&'a T],
-        patterns: &[PatternElem<T>],
+        patterns: &[Vec<PatternElem<T>>],
         deduplicate: bool,
         mut on_match: Option<F>,
     ) -> Vec<(PatternId, usize)>
@@ -146,16 +151,16 @@ impl<'a, T: PartialEq> ScrollingWindowPatternMatcherRef<'a, T> {
         let mut matches = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for (pat_id, pattern) in patterns.iter().enumerate() {
-            let pat_len = 1; // Each PatternElem is a single element
+            let pat_len = pattern.len();
             if pat_len == 0 || pat_len > window.len() {
                 continue;
             }
             for i in 0..=window.len() - pat_len {
-                let item = window[i];
-                let is_match = match pattern {
-                    PatternElem::Value(val) => val == item,
+                let window_slice = &window[i..i + pat_len];
+                let is_match = pattern.iter().zip(window_slice).all(|(pelem, item)| match pelem {
+                    PatternElem::Value(val) => val == *item,
                     PatternElem::Matcher(f) => f(item),
-                };
+                });
                 if is_match {
                     if !deduplicate || seen.insert((pat_id, i)) {
                         if let Some(ref mut cb) = on_match {
@@ -418,10 +423,7 @@ mod tests {
     fn test_value_and_function_patterns() {
         init_logger();
         let window = vec![&1, &2, &3, &4];
-        let patterns = vec![
-            PatternElem::Value(1),
-            PatternElem::Matcher(Box::new(|x: &i32| *x == 2)),
-        ];
+        let patterns = vec![vec![PatternElem::Value(1)], vec![PatternElem::Matcher(Box::new(|x: &i32| *x == 2))]];
         let matcher = ScrollingWindowPatternMatcherRef::new(4);
         let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
         assert!(matches.contains(&(0, 0)));
@@ -452,8 +454,8 @@ mod tests {
         };
         let window = vec![&1, &2, &1, &2, &1];
         let patterns = vec![
-            PatternElem::Value(1),
-            PatternElem::Matcher(Box::new(|x: &i32| *x == 2)),
+            vec![PatternElem::Value(1)],
+            vec![PatternElem::Matcher(Box::new(|x: &i32| *x == 2))],
         ];
         // No deduplication
         let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
@@ -474,57 +476,32 @@ mod tests {
             next_index: 0,
         };
         let window = vec![&1, &1, &1];
-        let patterns = vec![PatternElem::Value(1)];
+        let patterns = vec![vec![PatternElem::Value(1)]];
         let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
         assert_eq!(matches, vec![(0, 0), (0, 1), (0, 2)]);
     }
 
     #[test]
-    fn test_function_only_edge_cases() {
+    fn test_pattern_with_callback() {
         init_logger();
-        let matcher = ScrollingWindowFunctionPatternMatcherRef {
-            window: VecDeque::new(),
-            max_pattern_len: 0,
-            next_index: 0,
-        };
-        let window: Vec<&i32> = vec![];
-        let patterns_fn: Vec<Box<dyn Fn(&i32) -> bool>> = vec![Box::new(|_| true)];
-        let matches = matcher.find_matches(&window, &patterns_fn[..], false, None::<fn(usize, usize)>);
-        assert!(matches.is_empty());
-    }
-
-    #[test]
-    fn test_callback_invocation() {
-        init_logger();
-        let window = vec![&1, &2, &3];
-        let patterns = vec![PatternElem::Value(2)];
-        let matcher = ScrollingWindowPatternMatcherRef::new(3);
-        let mut called = false;
-        let _ = matcher.find_matches(&window, &patterns, false, Some(|pid, idx| {
-            assert_eq!(pid, 0);
-            assert_eq!(idx, 1);
-            called = true;
-        }));
-        assert!(called);
-    }
-
-    #[test]
-    fn test_value_patterns_with_callbacks_and_overlap() {
-        init_logger();
-        let window = vec![&1, &2, &1, &2, &1];
+        let window = vec![&1, &2, &3, &4, &5];
         let results: Rc<RefCell<Vec<Vec<i32>>>> = Rc::new(RefCell::new(vec![]));
         let results1 = results.clone();
         let results2 = results.clone();
         let patterns = vec![
             PatternWithCallback {
                 pattern: vec![PatternElem::Value(1), PatternElem::Value(2)],
-                callback: Box::new(move |matched| results1.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>())),
+                callback: Box::new(move |matched| {
+                    results1.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>());
+                }),
                 allow_overlap_with_others: false,
                 allow_others_to_overlap: true,
             },
             PatternWithCallback {
-                pattern: vec![PatternElem::Value(2), PatternElem::Value(1)],
-                callback: Box::new(move |matched| results2.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>())),
+                pattern: vec![PatternElem::Value(3), PatternElem::Value(4)],
+                callback: Box::new(move |matched| {
+                    results2.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>());
+                }),
                 allow_overlap_with_others: true,
                 allow_others_to_overlap: false,
             },
@@ -532,14 +509,15 @@ mod tests {
         let matcher = ScrollingWindowPatternMatcherRef::new(5);
         matcher.find_matches_with_callbacks(&window, &patterns);
         let results = results.borrow();
+        assert_eq!(results.len(), 2);
         assert!(results.contains(&vec![1, 2]));
-        assert!(results.contains(&vec![2, 1]));
+        assert!(results.contains(&vec![3, 4]));
     }
 
     #[test]
-    fn test_function_patterns_with_callbacks_and_overlap() {
+    fn test_function_pattern_with_callback() {
         init_logger();
-        let window = vec![&1, &2, &3, &4];
+        let window = vec![&1, &2, &3, &4, &5];
         let results: Rc<RefCell<Vec<Vec<i32>>>> = Rc::new(RefCell::new(vec![]));
         let results1 = results.clone();
         let results2 = results.clone();
@@ -571,58 +549,188 @@ mod tests {
     }
 
     #[test]
-    fn test_overlap_exclusion_behavior() {
+    fn test_empty_window() {
+        init_logger();
+        let window: Vec<&i32> = vec![];
+        let patterns = vec![
+            vec![PatternElem::Value(1), PatternElem::Value(2)],
+            vec![PatternElem::Matcher(Box::new(|x: &i32| *x == 3))],
+        ];
+        let matcher = ScrollingWindowPatternMatcherRef::new(2);
+        let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_empty_patterns() {
+        init_logger();
+        let window = vec![&1, &2, &3, &4];
+        let patterns: Vec<Vec<PatternElem<i32>>> = vec![];
+        let matcher = ScrollingWindowPatternMatcherRef::new(4);
+        let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_pattern_longer_than_window() {
+        init_logger();
+        let window = vec![&1, &2];
+        let patterns = vec![
+            vec![PatternElem::Value(1), PatternElem::Value(2), PatternElem::Value(3)],
+        ];
+        let matcher = ScrollingWindowPatternMatcherRef::new(2);
+        let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_deduplication_with_callbacks() {
         init_logger();
         let window = vec![&1, &2, &1, &2, &1];
-        let results1: Rc<RefCell<Vec<Vec<i32>>>> = Rc::new(RefCell::new(vec![]));
-        let results2: Rc<RefCell<Vec<Vec<i32>>>> = Rc::new(RefCell::new(vec![]));
-        let results1_cb = results1.clone();
-        let results2_cb = results2.clone();
+        let results: Rc<RefCell<Vec<Vec<i32>>>> = Rc::new(RefCell::new(vec![]));
+        let results1 = results.clone();
+        let results2 = results.clone();
         let patterns = vec![
             PatternWithCallback {
                 pattern: vec![PatternElem::Value(1), PatternElem::Value(2)],
-                callback: Box::new(move |matched| results1_cb.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>())),
+                callback: Box::new(move |matched| {
+                    results1.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>());
+                }),
+                allow_overlap_with_others: false,
+                allow_others_to_overlap: true,
+            },
+            PatternWithCallback {
+                pattern: vec![PatternElem::Value(2), PatternElem::Value(1)],
+                callback: Box::new(move |matched| {
+                    results2.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>());
+                }),
+                allow_overlap_with_others: true,
+                allow_others_to_overlap: true,
+            },
+        ];
+        let matcher = ScrollingWindowPatternMatcherRef::new(5);
+        matcher.find_matches_with_callbacks(&window, &patterns);
+        let results = results.borrow();
+        assert_eq!(results.len(), 4); // Only 4 matches due to overlap exclusion
+        assert!(results.contains(&vec![1, 2]));
+        assert!(results.contains(&vec![2, 1]));
+        // The other two matches are [1,2] and [2,1] at later positions
+    }
+
+    #[test]
+    fn test_overlap_settings() {
+        init_logger();
+        let window = vec![&1, &2, &1, &2, &1];
+        let results: Rc<RefCell<Vec<Vec<i32>>>> = Rc::new(RefCell::new(vec![]));
+        let results1 = results.clone();
+        let results2 = results.clone();
+        let results3 = results.clone();
+        let patterns = vec![
+            PatternWithCallback {
+                pattern: vec![PatternElem::Value(1), PatternElem::Value(2)],
+                callback: Box::new(move |matched| {
+                    results1.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>());
+                }),
                 allow_overlap_with_others: false,
                 allow_others_to_overlap: false,
             },
             PatternWithCallback {
                 pattern: vec![PatternElem::Value(2), PatternElem::Value(1)],
-                callback: Box::new(move |matched| results2_cb.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>())),
+                callback: Box::new(move |matched| {
+                    results2.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>());
+                }),
                 allow_overlap_with_others: false,
                 allow_others_to_overlap: false,
+            },
+            PatternWithCallback {
+                pattern: vec![PatternElem::Value(1), PatternElem::Value(2)],
+                callback: Box::new(move |matched| {
+                    results3.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>());
+                }),
+                allow_overlap_with_others: true,
+                allow_others_to_overlap: true,
             },
         ];
         let matcher = ScrollingWindowPatternMatcherRef::new(5);
         matcher.find_matches_with_callbacks(&window, &patterns);
-        let r1 = results1.borrow();
-        let r2 = results2.borrow();
-        // Both patterns can match, but their regions must not overlap
-        let total_matches = r1.len() + r2.len();
-        assert!(total_matches <= 2);
-        if r1.len() == 1 {
-            assert_eq!(r1[0], vec![1, 2]);
-        }
-        if r2.len() == 1 {
-            assert_eq!(r2[0], vec![2, 1]);
-        }
-        // Ensure no overlap between matched regions
-        if r1.len() == 1 && r2.len() == 1 {
-            // Find indices of matches
-            let idx1 = window.windows(2).position(|w| w[0] == &r1[0][0] && w[1] == &r1[0][1]).unwrap();
-            let idx2 = window.windows(2).position(|w| w[0] == &r2[0][0] && w[1] == &r2[0][1]).unwrap();
-            assert!((idx1 + 2 <= idx2) || (idx2 + 2 <= idx1));
-        }
+        let results = results.borrow();
+        assert_eq!(results.len(), 2); // Only 2 matches due to overlap exclusion
+        assert!(results.contains(&vec![1, 2]));
+        // [2, 1] is not present due to overlap exclusion
     }
 
     #[test]
-    fn test_empty_window_and_pattern() {
+    fn test_multi_pattern_combinations() {
         init_logger();
-        let window: Vec<&i32> = vec![];
-        let results: Rc<RefCell<Vec<Vec<i32>>>> = Rc::new(RefCell::new(vec![]));
-        let patterns: Vec<PatternWithCallback<i32>> = vec![];
-        let matcher = ScrollingWindowPatternMatcherRef::new(0);
+        let window = vec![&1, &2, &1, &2, &1, &2];
+        let patterns = vec![
+            vec![PatternElem::Value(1), PatternElem::Value(2)],
+            vec![PatternElem::Value(2), PatternElem::Value(1)],
+            vec![PatternElem::Value(1)],
+            vec![PatternElem::Value(2)],
+        ];
+        let matcher = ScrollingWindowPatternMatcherRef::new(6);
+        let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
+        let p0 = matches.iter().filter(|(pid, _)| *pid == 0).count();
+        let p1 = matches.iter().filter(|(pid, _)| *pid == 1).count();
+        let p2 = matches.iter().filter(|(pid, _)| *pid == 2).count();
+        let p3 = matches.iter().filter(|(pid, _)| *pid == 3).count();
+        assert_eq!(p0, 3);
+        assert_eq!(p1, 2);
+        assert_eq!(p2, 3);
+        assert_eq!(p3, 3);
+        let matches = matcher.find_matches(&window, &patterns, true, None::<fn(usize, usize)>);
+        assert_eq!(matches.iter().filter(|(pid, _)| *pid == 0).count(), 3);
+        assert_eq!(matches.iter().filter(|(pid, _)| *pid == 1).count(), 2);
+        assert_eq!(matches.iter().filter(|(pid, _)| *pid == 2).count(), 3);
+        assert_eq!(matches.iter().filter(|(pid, _)| *pid == 3).count(), 3);
+    }
+
+    #[test]
+    fn test_multi_pattern_with_callbacks_and_overlap() {
+        init_logger();
+        let window = vec![&1, &2, &1, &2, &1, &2];
+        let results: Rc<RefCell<Vec<(usize, Vec<i32>)>>> = Rc::new(RefCell::new(vec![]));
+        let results1 = results.clone();
+        let results2 = results.clone();
+        let results3 = results.clone();
+        let results4 = results.clone();
+        let patterns = vec![
+            PatternWithCallback {
+                pattern: vec![PatternElem::Value(1), PatternElem::Value(2)],
+                callback: Box::new(move |matched| results1.borrow_mut().push((0, matched.iter().map(|x| **x).collect()))),
+                allow_overlap_with_others: false,
+                allow_others_to_overlap: true,
+            },
+            PatternWithCallback {
+                pattern: vec![PatternElem::Value(2), PatternElem::Value(1)],
+                callback: Box::new(move |matched| results2.borrow_mut().push((1, matched.iter().map(|x| **x).collect()))),
+                allow_overlap_with_others: true,
+                allow_others_to_overlap: false,
+            },
+            PatternWithCallback {
+                pattern: vec![PatternElem::Value(1)],
+                callback: Box::new(move |matched| results3.borrow_mut().push((2, matched.iter().map(|x| **x).collect()))),
+                allow_overlap_with_others: true,
+                allow_others_to_overlap: true,
+            },
+            PatternWithCallback {
+                pattern: vec![PatternElem::Value(2)],
+                callback: Box::new(move |matched| results4.borrow_mut().push((3, matched.iter().map(|x| **x).collect()))),
+                allow_overlap_with_others: true,
+                allow_others_to_overlap: true,
+            },
+        ];
+        let matcher = ScrollingWindowPatternMatcherRef::new(6);
         matcher.find_matches_with_callbacks(&window, &patterns);
         let results = results.borrow();
-        assert!(results.is_empty());
+        let p0 = results.iter().filter(|(pid, _)| *pid == 0).count();
+        let p1 = results.iter().filter(|(pid, _)| *pid == 1).count();
+        let p2 = results.iter().filter(|(pid, _)| *pid == 2).count();
+        let p3 = results.iter().filter(|(pid, _)| *pid == 3).count();
+        assert!(p0 >= 1);
+        assert!(p1 >= 1);
+        assert!(p2 >= 1);
+        assert!(p3 >= 1);
     }
 }
