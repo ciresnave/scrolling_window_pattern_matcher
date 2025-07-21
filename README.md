@@ -1,15 +1,73 @@
-# Scrolling Window Pattern Matcher
+# Builder Pattern Usage
 
-This crate provides a generic pattern matcher that operates over a scrolling window (queue) of items.
-Patterns can be defined as sequences of values, functions, or a mix of both. When a pattern matches,
-an optional user-defined callback is invoked. The matcher supports optional deduplication of matches and per-pattern overlap settings.
+This crate supports ergonomic builder patterns for both `PatternElem` and `Pattern`:
 
-## Features
+```rust
+let elem = PatternElemBuilder::new().value(42).build();
+let pat = PatternBuilder::new()
+    .pattern(vec![PatternElem::Value(42)])
+    .deduplication(true)
+    .overlap(false)
+    .build();
 
-- Match patterns using values, functions, or both
-- Optional deduplication of matches
-- Support for overlapping matches (per-pattern control)
-- Callback invocation on match (per-pattern)
+- Mixed patterns: You can combine value and function elements in a single pattern.
+- Empty patterns or windows: Returns no matches.
+- Overlap and deduplication: Fine-grained control per pattern.
+- Callback invocation: Use closures to collect or process matches.
+
+- Builder pattern: Use for complex pattern construction and configuration.
+
+# Contributing
+
+We welcome contributions! Here’s how to get started:
+
+## Project Structure
+- `src/lib.rs`: Main matcher API and types
+- `src/lib_tests.rs`: Comprehensive unit tests
+- `README.md`: User and contributor documentation
+
+## Running and Writing Tests
+- Run all tests: `cargo test`
+- Add new tests in `src/lib_tests.rs` using the existing patterns as examples
+- Doc tests: Add examples to doc comments for public methods
+
+## Coding Style
+- Follow Rust’s standard formatting (`cargo fmt`)
+- Use clear, descriptive names and thorough doc comments
+- Prefer builder patterns for complex configuration
+
+## Submitting Issues and Pull Requests
+- Open issues for bugs, feature requests, or documentation improvements
+- Fork the repo, create a feature branch, and submit a pull request
+- Include tests and documentation for new features
+
+## Adding Features or Improving Docs
+- Add new matcher types or pattern features in `src/lib.rs`
+- Expand doc comments and README with examples and edge cases
+- Add tests for all new functionality
+
+## Benchmarks and Debug Logging
+- Use the [log](https://docs.rs/log/) crate for debug output
+- Enable logging: `env_logger::init();` in your main/test harness
+- Run with debug logs: `RUST_LOG=debug cargo test`
+
+```rust
+use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem, Pattern, PatternBuilder};
+let window = vec![1, 2, 1, 2, 1];
+let patterns = vec![
+    Pattern::new(vec![PatternElem::Value(1), PatternElem::Value(2)]),
+    Pattern::new(vec![PatternElem::Value(2), PatternElem::Value(1)]),
+    Pattern::new(vec![PatternElem::Value(1)]),
+    Pattern::new(vec![PatternElem::Value(2)]),
+];
+let matcher = ScrollingWindowPatternMatcherRef::new(5);
+let matches = matcher.find_matches(&window, &patterns);
+assert!(matches.contains(&(0, 0))); // [1,2] at 0
+assert!(matches.contains(&(1, 1))); // [2,1] at 1
+assert!(matches.contains(&(2, 2))); // [1] at 2
+assert!(matches.contains(&(3, 3))); // [2] at 3
+```
+
 - No unnecessary trait bounds: PartialEq is only required for value-based patterns
 - Accepts Vec, slice, or array for both window and patterns (no manual conversion needed)
 
@@ -34,15 +92,32 @@ let arr_window = [&1, &2, &1, &2, &1];
 let arr_patterns = [
     vec![PatternElem::Value(1), PatternElem::Value(2)],
     vec![PatternElem::Value(2), PatternElem::Value(1)],
+```rust
+use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem, Pattern, PatternBuilder};
+use std::rc::Rc;
+use std::cell::RefCell;
+let window = vec![1, 2, 1, 2, 1];
+let results: Rc<RefCell<Vec<Vec<i32>>>> = Rc::new(RefCell::new(vec![]));
+let results1 = results.clone();
+let results2 = results.clone();
+let patterns = vec![
+    PatternBuilder::new()
+        .pattern(vec![PatternElem::Value(1), PatternElem::Value(2)])
+        .callback(move |matched| results1.borrow_mut().push(matched.to_vec()))
+        .overlap(false)
+        .build(),
+    PatternBuilder::new()
+        .pattern(vec![PatternElem::Value(2), PatternElem::Value(1)])
+        .callback(move |matched| results2.borrow_mut().push(matched.to_vec()))
+        .overlap(true)
+        .build(),
 ];
-let matches = matcher.find_matches(&arr_window, &arr_patterns, false, None::<fn(usize, usize)>);
-assert!(matches.contains(&(0, 0))); // [1,2] at 0
-assert!(matches.contains(&(1, 1))); // [2,1] at 1
-assert!(matches.contains(&(2, 0))); // [1] at 0
-assert!(matches.contains(&(3, 1))); // [2] at 1
+let matcher = ScrollingWindowPatternMatcherRef::new(5);
+matcher.find_matches(&window, &patterns);
+let results = results.borrow();
+assert!(results.contains(&vec![1, 2]));
+assert!(results.contains(&vec![2, 1]));
 ```
-
-## Usage: Patterns with Callbacks and Overlap Settings
 
 ```rust
 use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem, PatternWithCallback};
@@ -73,24 +148,6 @@ assert!(results.contains(&vec![1, 2]));
 assert!(results.contains(&vec![2, 1]));
 ```
 
-## Usage: Function-Only Patterns (New API)
-
-```rust
-use scrolling_window_pattern_matcher::ScrollingWindowFunctionPatternMatcherRef;
-let window = vec![&1, &2, &3, &4];
-let patterns_fn: Vec<Vec<Box<dyn Fn(&i32) -> bool>>> = vec![
-    vec![Box::new(|x| *x == 1)],
-    vec![Box::new(|x| *x == 4)],
-];
-let matcher = ScrollingWindowFunctionPatternMatcherRef::new(4);
-// Pass Vec, slice, or array for window and patterns:
-let matches = matcher.find_matches(&window, &patterns_fn, false, None::<fn(usize, usize)>);
-assert!(matches.contains(&(0, 0)));
-assert!(matches.contains(&(1, 3)));
-```
-
-## Usage: Function-Only Patterns with Callbacks and Overlap
-
 ```rust
 use scrolling_window_pattern_matcher::{ScrollingWindowFunctionPatternMatcherRef, PatternWithCallbackFn};
 use std::rc::Rc;
@@ -114,11 +171,8 @@ let patterns = vec![
     },
 ];
 let matcher = ScrollingWindowFunctionPatternMatcherRef::new(4);
-matcher.find_matches_with_callbacks(&window, &patterns);
-let results = results.borrow();
-assert!(results.contains(&vec![1, 2]));
-assert!(results.contains(&vec![2, 3]));
-```
+- `find_matches`: Use for value, mixed, or callback patterns (requires PartialEq for T), supports multiple patterns and multi-element patterns. Accepts any type convertible to a slice for window and patterns. Automatically invokes callbacks and respects overlap/deduplication settings.
+
 
 ## Overlap Settings
 
@@ -149,12 +203,10 @@ Debug logs provide detailed information about matcher execution, pattern matchin
 
 ## API
 
-- `ScrollingWindowPatternMatcherRef::find_matches`: Value/mixed patterns with multiple patterns and multi-element support. Accepts any type convertible to a slice for window and patterns.
-- `ScrollingWindowPatternMatcherRef::find_matches_with_callbacks`: Value/mixed patterns with per-pattern callbacks and overlap settings.
-- `ScrollingWindowFunctionPatternMatcherRef::find_matches`: Function-only patterns with multiple patterns. Accepts Vec, slice, or array for window and patterns.
-- `ScrollingWindowFunctionPatternMatcherRef::find_matches_with_callbacks`: Function-only patterns with per-pattern callbacks and overlap settings.
+- `find_matches`: Use for value or mixed patterns (requires PartialEq for T), supports multiple patterns and multi-element patterns. Accepts any type convertible to a slice for window and patterns.
+- `find_matches_with_callbacks`: Use for value/mixed patterns with per-pattern callbacks and overlap settings
 
-See the test module for more comprehensive examples and edge cases.
+See tests for more comprehensive examples and edge cases.
 
 ## Edge Cases
 
@@ -164,5 +216,54 @@ See the test module for more comprehensive examples and edge cases.
 - Deduplication and overlap settings can be combined
 - Patterns of length 1 and longer are supported
 - Overlap exclusion can prevent some matches (see tests)
-- Function-only API works for any type, even if T does not implement PartialEq
+
 - Window and patterns can be Vec, slice, or array
+
+//! ## Example: Value patterns
+//! let patterns = vec![
+//!     Pattern::new(vec![&1, &2]),
+//!     Pattern::new(vec![&2, &1]),
+//! ];
+//! let matches = matcher.find_matches(&window, &patterns);
+//! assert!(matches.contains(&(0, 0))); // [1,2] at 0
+//! assert!(matches.contains(&(1, 1))); // [2,1] at 1
+//! assert!(matches.contains(&(2, 0))); // [1] at 0
+//! assert!(matches.contains(&(3, 1))); // [2] at 1
+//!
+//! ## Example: Callback pattern
+//! let patterns = vec![
+//!     Pattern::with_callback(vec![&1, &2], |x: &&i32| **x == 1 ||**x == 2),
+//! ];
+//! let matches = matcher.find_matches(&window, &patterns);
+//! assert!(matches.contains(&(0, 0))); // [1,2] at 0
+//! assert!(matches.contains(&(1, 1))); // [2,1] at 1
+//! assert!(matches.contains(&(2, 0))); // [1] at 0
+//! assert!(matches.contains(&(3, 1))); // [2] at 1
+//!
+
+//! let patterns_fn: Vec<Vec<Box<dyn Fn(&i32) -> bool>>> = vec![
+//!     vec![Box::new(|x| *x == 1)],
+//!     vec![Box::new(|x|*x == 4)],
+ //! ];
+ //! let matches = matcher.find_matches(&window, &patterns_fn, false, None::<fn(usize, usize)>);
+ //! assert!(matches.contains(&(0, 0)));
+ //! assert!(matches.contains(&(1, 3)));
+ //!
+ with callback
+//! let patterns = vec![
+
+//!         pattern: vec![Box::new(|x: &i32| *x == 1), Box::new(|x: &i32|*x == 2)],
+ //!         callback: Box::new(move |matched| results1.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>())),
+ //!         allow_overlap_with_others: false,
+ //!         allow_others_to_overlap: true,
+ //!     },
+
+ //!         pattern: vec![Box::new(|x: &i32| *x == 2), Box::new(|x: &i32|*x == 3)],
+ //!         callback: Box::new(move |matched| results2.borrow_mut().push(matched.iter().map(|x| **x).collect::<Vec<_>>())),
+ //!         allow_overlap_with_others: true,
+ //!         allow_others_to_overlap: false,
+ //!     },
+ //! ];
+ //! let matches = matcher.find_matches_with_callbacks(&window, &patterns);
+ //! assert!(results.contains(&vec![1, 2]));
+ //! assert!(results.contains(&vec![2, 3]));

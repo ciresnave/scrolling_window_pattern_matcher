@@ -18,40 +18,9 @@ pub enum PatternElem<T> {
 
 pub struct Pattern<T> {
     pub pattern: Vec<PatternElem<T>>,
-    pub callback: Option<SliceCallback<T>>,
+    pub callback: Option<Box<dyn Fn(&[T]) + 'static>>,
     pub deduplication: bool,
     pub overlap: bool,
-}
-
-impl<T> Pattern<T> {
-    /// Create a new Pattern from a sequence of PatternElem
-    pub fn new(pattern: Vec<PatternElem<T>>) -> Self {
-        Pattern {
-            pattern,
-            callback: None,
-            deduplication: false,
-            overlap: false,
-        }
-    }
-    /// Create a Pattern with a callback (receives the matched slice)
-    pub fn with_callback(pattern: Vec<PatternElem<T>>, callback: SliceCallback<T>) -> Self {
-        Pattern {
-            pattern,
-            callback: Some(callback),
-            deduplication: false,
-            overlap: false,
-        }
-    }
-
-    /// Create a Pattern from all options
-    pub fn from_all(pattern: Vec<PatternElem<T>>, callback: Option<SliceCallback<T>>, deduplication: bool, overlap: bool) -> Self {
-        PatternBuilder::new()
-            .pattern(pattern)
-            .callback_opt(callback)
-            .deduplication(deduplication)
-            .overlap(overlap)
-            .build()
-    }
 }
 
 /// Builder for PatternElem
@@ -111,7 +80,7 @@ impl<T> PatternElem<T> {
 /// Builder for Pattern
 pub struct PatternBuilder<T> {
     pattern: Option<Vec<PatternElem<T>>>,
-    callback: Option<SliceCallback<T>>,
+    callback: Option<Box<dyn Fn(&[T]) + 'static>>,
     deduplication: Option<bool>,
     overlap: Option<bool>,
 }
@@ -135,8 +104,8 @@ impl<T> PatternBuilder<T> {
     }
     /// Set the callback for the pattern
     /// Set the callback for the pattern (receives the matched slice)
-    pub fn callback(mut self, cb: SliceCallback<T>) -> Self {
-        self.callback = Some(cb);
+    pub fn callback<F: Fn(&[T]) + 'static>(mut self, cb: F) -> Self {
+        self.callback = Some(Box::new(cb));
         self
     }
     /// Set deduplication
@@ -150,7 +119,7 @@ impl<T> PatternBuilder<T> {
         self
     }
     /// Optionally set the callback
-    pub fn callback_opt(mut self, cb: Option<SliceCallback<T>>) -> Self {
+    pub fn callback_opt(mut self, cb: Option<Box<dyn Fn(&[T]) + 'static>>) -> Self {
         if let Some(c) = cb { self.callback = Some(c); }
         self
     }
@@ -165,7 +134,39 @@ impl<T> PatternBuilder<T> {
     }
 }
 
-/// Stubs for matcher types used in doc tests
+    /// Create a new Pattern from a sequence of PatternElem
+    pub fn new(pattern: Vec<PatternElem<T>>) -> Self {
+        Pattern {
+            pattern,
+            callback: None,
+            deduplication: false,
+            overlap: false,
+        }
+    }
+    /// Create a Pattern with a callback (receives the matched slice)
+    pub fn with_callback(pattern: Vec<PatternElem<T>>, callback: impl Fn(&[T]) + 'static) -> Self {
+        Pattern {
+            pattern,
+            callback: Some(Box::new(callback)),
+            deduplication: false,
+            overlap: false,
+        }
+    }
+
+    pub fn from_all(pattern: Vec<T>, callback: Option<Box<dyn Fn(&[T]) + 'static>>, deduplication: bool, overlap: bool) -> Self {
+        PatternBuilder::new()
+            .pattern(pattern)
+            .callback_opt(callback)
+            .deduplication(deduplication)
+            .overlap(overlap)
+            .build()
+    }
+    pub fn builder() -> PatternBuilder<T> {
+        PatternBuilder::new()
+    }
+}
+
+// Stubs for matcher types used in doc tests
 pub struct ScrollingWindowPatternMatcherRef;
 
 impl ScrollingWindowPatternMatcherRef {
@@ -178,10 +179,10 @@ impl ScrollingWindowPatternMatcherRef {
     where T: PartialEq + Clone
     {
         let mut matches = Vec::new();
+        let mut matched_ranges: Vec<(usize, usize)> = Vec::new();
         for (p_idx, pat) in patterns.iter().enumerate() {
             let pat_len = pat.pattern.len();
             if pat_len == 0 || window.len() < pat_len { continue; }
-            let mut matched_ranges: Vec<(usize, usize)> = Vec::new();
             let mut w_idx = 0;
             while w_idx <= window.len() - pat_len {
                 let candidate = &window[w_idx..w_idx+pat_len];
@@ -203,7 +204,7 @@ impl ScrollingWindowPatternMatcherRef {
                     }
                 }
                 if matched {
-                    // Overlap checks per-pattern
+                    // Overlap checks if needed
                     let mut overlaps = false;
                     if !pat.overlap {
                         for &(start, end) in &matched_ranges {
@@ -221,7 +222,7 @@ impl ScrollingWindowPatternMatcherRef {
                             cb(candidate);
                         }
                         matches.push((w_idx, p_idx));
-                        if pat.deduplication {
+                        if !pat.deduplication {
                             matched_ranges.push((w_idx, w_idx + pat_len - 1));
                         }
                     }
