@@ -10,6 +10,7 @@
 //! - Support for overlapping matches (per-pattern control)
 //! - Callback invocation on match (per-pattern)
 //! - No unnecessary trait bounds: PartialEq is only required for value-based patterns
+//! - Accepts Vec, slice, or array for both window and patterns (no manual conversion needed)
 //!
 //! ## Usage: Value/Mixed Patterns with Multiple Patterns
 //!
@@ -23,11 +24,19 @@
 //!     vec![PatternElem::Value(2)],
 //! ];
 //! let matcher = ScrollingWindowPatternMatcherRef::new(5);
+//! // You can pass Vec, slice, or array for window and patterns:
 //! let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
+//! // Or:
+//! let matches = matcher.find_matches(window.as_slice(), patterns.as_slice(), false, None::<fn(usize, usize)>);
+//! // Or with arrays:
+//! let arr_window = [&1, &2, &1, &2, &1];
+//! let arr_patterns = [
+//!     vec![PatternElem::Value(1), PatternElem::Value(2)],
+//!     vec![PatternElem::Value(2), PatternElem::Value(1)],
+//! ];
+//! let matches = matcher.find_matches(&arr_window, &arr_patterns, false, None::<fn(usize, usize)>);
 //! assert!(matches.contains(&(0, 0))); // [1,2] at 0
 //! assert!(matches.contains(&(1, 1))); // [2,1] at 1
-//! assert!(matches.contains(&(2, 0))); // [1] at 0
-//! assert!(matches.contains(&(3, 1))); // [2] at 1
 //! ```
 //!
 //! ## Usage: Function-Only Patterns (New API)
@@ -40,6 +49,7 @@
 //!     vec![Box::new(|x| *x == 4)],
 //! ];
 //! let matcher = ScrollingWindowFunctionPatternMatcherRef::new(4);
+//! // Pass Vec, slice, or array for window and patterns:
 //! let matches = matcher.find_matches(&window, &patterns_fn, false, None::<fn(usize, usize)>);
 //! assert!(matches.contains(&(0, 0)));
 //! assert!(matches.contains(&(1, 3)));
@@ -116,12 +126,13 @@
 //! - Patterns of length 1 and longer are supported
 //! - Overlap exclusion can prevent some matches (see tests)
 //! - Function-only API works for any type, even if T does not implement PartialEq
+//! - Window and patterns can be Vec, slice, or array
 //!
 //! ## API
 //!
-//! - `find_matches`: Use for value or mixed patterns (requires PartialEq for T), supports multiple patterns and multi-element patterns
+//! - `find_matches`: Use for value or mixed patterns (requires PartialEq for T), supports multiple patterns and multi-element patterns. Accepts any type convertible to a slice for window and patterns.
 //! - `find_matches_with_callbacks`: Use for value/mixed patterns with per-pattern callbacks and overlap settings
-//! - `find_matches` (function matcher): Use for function-only patterns (no trait bound required, now accepts Vec<Vec<Box<dyn Fn(&T) -> bool>>>)
+//! - `find_matches` (function matcher): Use for function-only patterns (no trait bound required, now accepts Vec, slice, or array for window and patterns)
 //! - `find_matches_with_callbacks` (function matcher): Use for function-only patterns with per-pattern callbacks and overlap settings
 //!
 //! See tests for more comprehensive examples and edge cases.
@@ -187,16 +198,19 @@ impl<'a, T: PartialEq> ScrollingWindowPatternMatcherRef<'a, T> {
     }
 
     /// Find matches for multiple patterns (each a sequence of PatternElem<T>).
-    pub fn find_matches<'b, F>(
-        &self,
-        window: &'b [&'a T],
-        patterns: &[Vec<PatternElem<T>>],
+    pub fn find_matches<'b, F, P, W>(&self,
+        window: W,
+        patterns: P,
         deduplicate: bool,
         mut on_match: Option<F>,
     ) -> Vec<(PatternId, usize)>
     where
         F: FnMut(PatternId, usize),
+        P: AsRef<[Vec<PatternElem<T>>]>,
+        W: AsRef<[&'a T]>,
     {
+        let window = window.as_ref();
+        let patterns = patterns.as_ref();
         let mut matches = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for (pat_id, pattern) in patterns.iter().enumerate() {
@@ -304,16 +318,19 @@ impl<'a, T> ScrollingWindowFunctionPatternMatcherRef<'a, T> {
     }
 
     /// Find matches using function-only patterns (now accepts Vec<Vec<Box<dyn Fn(&T) -> bool>>>).
-    pub fn find_matches<'b, F>(
-        &self,
-        window: &'b [&'a T],
-        patterns: &[Vec<Box<dyn Fn(&T) -> bool>>],
+    pub fn find_matches<'b, F, P, W>(&self,
+        window: W,
+        patterns: P,
         deduplicate: bool,
         mut on_match: Option<F>,
     ) -> Vec<(usize, usize)>
     where
         F: FnMut(usize, usize),
+        P: AsRef<[Vec<Box<dyn Fn(&T) -> bool>>]>,
+        W: AsRef<[&'a T]>,
     {
+        let window = window.as_ref();
+        let patterns = patterns.as_ref();
         let mut matches = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for (pat_id, pattern) in patterns.iter().enumerate() {
@@ -406,10 +423,12 @@ impl<T: Clone> ScrollingWindowPatternMatcherOwned<T> {
     }
 
     /// Find matches for the given patterns, returning a map of index to pattern IDs and references to items.
-    pub fn find_matches(&self, patterns: &[Vec<PatternElem<T>>]) -> HashMap<u64, (Vec<PatternId>, &T)>
+    pub fn find_matches<P>(&self, patterns: P) -> HashMap<u64, (Vec<PatternId>, &T)>
     where
         T: PartialEq,
+        P: AsRef<[Vec<PatternElem<T>>]>,
     {
+        let patterns = patterns.as_ref();
         let mut matches: HashMap<u64, (Vec<PatternId>, &T)> = HashMap::new();
         let min_pat_len = patterns.iter().map(|p| p.len()).min().unwrap_or(0);
         if self.window.len() < min_pat_len {
@@ -782,5 +801,59 @@ mod tests {
         assert!(p1 >= 1);
         assert!(p2 >= 1);
         assert!(p3 >= 1);
+    }
+
+    #[test]
+    fn test_asref_vec_slice_array_patterns_and_window() {
+        init_logger();
+        let matcher = ScrollingWindowPatternMatcherRef::new(4);
+        // Vec
+        let window_vec = vec![&1, &2, &3, &4];
+        let patterns_vec = vec![vec![PatternElem::Value(1)], vec![PatternElem::Value(4)]];
+        let matches = matcher.find_matches(&window_vec, &patterns_vec, false, None::<fn(usize, usize)>);
+        assert!(matches.contains(&(0, 0)));
+        assert!(matches.contains(&(1, 3)));
+        // Slice
+        let window_slice: &[&i32] = &window_vec;
+        let patterns_slice: &[Vec<PatternElem<i32>>] = &patterns_vec;
+        let matches = matcher.find_matches(window_slice, patterns_slice, false, None::<fn(usize, usize)>);
+        assert!(matches.contains(&(0, 0)));
+        assert!(matches.contains(&(1, 3)));
+        // Array
+        let window_array = [&1, &2, &3, &4];
+        let patterns_array = [vec![PatternElem::Value(1)], vec![PatternElem::Value(4)]];
+        let matches = matcher.find_matches(&window_array, &patterns_array, false, None::<fn(usize, usize)>);
+        assert!(matches.contains(&(0, 0)));
+        assert!(matches.contains(&(1, 3)));
+    }
+
+    #[test]
+    fn test_asref_vec_slice_array_function_patterns_and_window() {
+        init_logger();
+        let matcher = ScrollingWindowFunctionPatternMatcherRef::new(4);
+        // Vec
+        let window_vec = vec![&1, &2, &3, &4];
+        let patterns_vec: Vec<Vec<Box<dyn Fn(&i32) -> bool>>> = vec![
+            vec![Box::new(|x| *x == 1)],
+            vec![Box::new(|x| *x == 4)],
+        ];
+        let matches = matcher.find_matches(&window_vec, &patterns_vec, false, None::<fn(usize, usize)>);
+        assert!(matches.contains(&(0, 0)));
+        assert!(matches.contains(&(1, 3)));
+        // Slice
+        let window_slice: &[&i32] = &window_vec;
+        let patterns_slice: &[Vec<Box<dyn Fn(&i32) -> bool>>] = &patterns_vec;
+        let matches = matcher.find_matches(window_slice, patterns_slice, false, None::<fn(usize, usize)>);
+        assert!(matches.contains(&(0, 0)));
+        assert!(matches.contains(&(1, 3)));
+        // Array
+        let window_array = [&1, &2, &3, &4];
+        let patterns_array: [Vec<Box<dyn Fn(&i32) -> bool>>; 2] = [
+            vec![Box::new(|x| *x == 1)],
+            vec![Box::new(|x| *x == 4)],
+        ];
+        let matches = matcher.find_matches(&window_array, &patterns_array, false, None::<fn(usize, usize)>);
+        assert!(matches.contains(&(0, 0)));
+        assert!(matches.contains(&(1, 3)));
     }
 }

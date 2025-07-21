@@ -11,6 +11,7 @@ an optional user-defined callback is invoked. The matcher supports optional dedu
 - Support for overlapping matches (per-pattern control)
 - Callback invocation on match (per-pattern)
 - No unnecessary trait bounds: PartialEq is only required for value-based patterns
+- Accepts Vec, slice, or array for both window and patterns (no manual conversion needed)
 
 ## Usage: Value/Mixed Patterns with Multiple Patterns
 
@@ -24,7 +25,17 @@ let patterns = vec![
     vec![PatternElem::Value(2)],
 ];
 let matcher = ScrollingWindowPatternMatcherRef::new(5);
+// You can pass Vec, slice, or array for window and patterns:
 let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
+// Or:
+let matches = matcher.find_matches(window.as_slice(), patterns.as_slice(), false, None::<fn(usize, usize)>);
+// Or with arrays:
+let arr_window = [&1, &2, &1, &2, &1];
+let arr_patterns = [
+    vec![PatternElem::Value(1), PatternElem::Value(2)],
+    vec![PatternElem::Value(2), PatternElem::Value(1)],
+];
+let matches = matcher.find_matches(&arr_window, &arr_patterns, false, None::<fn(usize, usize)>);
 assert!(matches.contains(&(0, 0))); // [1,2] at 0
 assert!(matches.contains(&(1, 1))); // [2,1] at 1
 assert!(matches.contains(&(2, 0))); // [1] at 0
@@ -72,6 +83,7 @@ let patterns_fn: Vec<Vec<Box<dyn Fn(&i32) -> bool>>> = vec![
     vec![Box::new(|x| *x == 4)],
 ];
 let matcher = ScrollingWindowFunctionPatternMatcherRef::new(4);
+// Pass Vec, slice, or array for window and patterns:
 let matches = matcher.find_matches(&window, &patterns_fn, false, None::<fn(usize, usize)>);
 assert!(matches.contains(&(0, 0)));
 assert!(matches.contains(&(1, 3)));
@@ -137,9 +149,9 @@ Debug logs provide detailed information about matcher execution, pattern matchin
 
 ## API
 
-- `ScrollingWindowPatternMatcherRef::find_matches`: Value/mixed patterns with multiple patterns and multi-element support.
+- `ScrollingWindowPatternMatcherRef::find_matches`: Value/mixed patterns with multiple patterns and multi-element support. Accepts any type convertible to a slice for window and patterns.
 - `ScrollingWindowPatternMatcherRef::find_matches_with_callbacks`: Value/mixed patterns with per-pattern callbacks and overlap settings.
-- `ScrollingWindowFunctionPatternMatcherRef::find_matches`: Function-only patterns with multiple patterns.
+- `ScrollingWindowFunctionPatternMatcherRef::find_matches`: Function-only patterns with multiple patterns. Accepts Vec, slice, or array for window and patterns.
 - `ScrollingWindowFunctionPatternMatcherRef::find_matches_with_callbacks`: Function-only patterns with per-pattern callbacks and overlap settings.
 
 See the test module for more comprehensive examples and edge cases.
@@ -153,3 +165,4 @@ See the test module for more comprehensive examples and edge cases.
 - Patterns of length 1 and longer are supported
 - Overlap exclusion can prevent some matches (see tests)
 - Function-only API works for any type, even if T does not implement PartialEq
+- Window and patterns can be Vec, slice, or array
