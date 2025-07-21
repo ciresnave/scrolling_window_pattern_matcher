@@ -2,74 +2,91 @@
 
 This crate provides a generic pattern matcher that operates over a scrolling window (queue) of items.
 Patterns can be defined as sequences of values, functions, or a mix of both. When a pattern matches,
-an optional user-defined callback is invoked. The matcher supports optional deduplication of matches.
+an optional user-defined callback is invoked. The matcher supports optional deduplication of matches and per-pattern overlap settings.
 
 ## Features
 
 - Match patterns using values, functions, or both
 - Optional deduplication of matches
-- Support for overlapping matches
-- Callback invocation on match
+- Support for overlapping matches (per-pattern control)
+- Callback invocation on match (per-pattern)
 - No unnecessary trait bounds: PartialEq is only required for value-based patterns
 
-## Usage
+## Usage: Value/Mixed Patterns with Callbacks and Overlap Settings
 
 ```rust
-use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem};
-let window = vec![&1, &2, &3, &4];
+use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem, PatternWithCallback};
+let window = vec![&1, &2, &1, &2, &1];
+let mut results = vec![];
 let patterns = vec![
-    PatternElem::Value(1),
-    PatternElem::Matcher(Box::new(|x: &i32| *x == 2)),
+    PatternWithCallback {
+        pattern: vec![PatternElem::Value(1), PatternElem::Value(2)],
+        callback: Box::new(|matched| results.push(matched.iter().map(|x| **x).collect::<Vec<_>>())),
+        allow_overlap_with_others: false,
+        allow_others_to_overlap: true,
+    },
+    PatternWithCallback {
+        pattern: vec![PatternElem::Value(2), PatternElem::Value(1)],
+        callback: Box::new(|matched| results.push(matched.iter().map(|x| **x).collect::<Vec<_>>())),
+        allow_overlap_with_others: true,
+        allow_others_to_overlap: true,
+    },
 ];
-let matcher = ScrollingWindowPatternMatcherRef::new(4);
-let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
-assert!(matches.contains(&(0, 0)));
-assert!(matches.contains(&(1, 1)));
+let matcher = ScrollingWindowPatternMatcherRef::new(5);
+matcher.find_matches_with_callbacks(&window, &patterns);
+assert!(results.contains(&vec![1, 2]));
+assert!(results.contains(&vec![2, 1]));
 ```
 
-## Function-only Patterns
+## Usage: Function-only Patterns with Callbacks and Overlap Settings
 
 ```rust
-use scrolling_window_pattern_matcher::ScrollingWindowFunctionPatternMatcherRef;
+use scrolling_window_pattern_matcher::{ScrollingWindowFunctionPatternMatcherRef, PatternWithCallbackFn};
 let window = vec![&1, &2, &3, &4];
-let patterns_fn: Vec<Box<dyn Fn(&i32) -> bool>> = vec![
-    Box::new(|x| *x == 1),
-    Box::new(|x| *x == 4),
+let mut results = vec![];
+let patterns = vec![
+    PatternWithCallbackFn {
+        pattern: vec![Box::new(|x| *x == 1), Box::new(|x| *x == 2)],
+        callback: Box::new(|matched| results.push(matched.iter().map(|x| **x).collect::<Vec<_>>())),
+        allow_overlap_with_others: false,
+        allow_others_to_overlap: true,
+    },
 ];
 let matcher = ScrollingWindowFunctionPatternMatcherRef::new(4);
-let matches = matcher.find_matches(&window, &patterns_fn[..], false, None::<fn(usize, usize)>);
-assert!(matches.contains(&(0, 0)));
-assert!(matches.contains(&(1, 3)));
+matcher.find_matches_with_callbacks(&window, &patterns);
+assert!(results.contains(&vec![1, 2]));
 ```
 
-## Deduplication and Overlapping Matches
+## Overlap Settings
 
-Set `deduplicate` to `true` to avoid reporting the same match more than once.
+- `allow_overlap_with_others`: If false, this pattern will not match if it would overlap with any previous match.
+- `allow_others_to_overlap`: If false, once this pattern matches, no future matches can overlap its matched region.
 
-## Callback Example
+## Debug Logging
+
+This crate uses the [log](https://docs.rs/log/) crate for debug logging. To enable debug output during development, add the following to your main function or test harness:
 
 ```rust
-use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem};
-let window = vec![&1, &2, &3];
-let patterns = vec![PatternElem::Value(2)];
-let matcher = ScrollingWindowPatternMatcherRef::new(3);
-let mut called = false;
-let _ = matcher.find_matches(&window, &patterns, false, Some(|pid, idx| {
-    assert_eq!(pid, 0);
-    assert_eq!(idx, 1);
-    called = true;
-}));
-assert!(called);
+env_logger::init();
 ```
 
-## Edge Cases
+Then run your program or tests with:
 
-- Empty window or patterns: returns no matches
-- Patterns can be all values, all functions, or mixed
+```
+RUST_LOG=debug cargo test
+```
+
+To disable logging (e.g., in production), do not initialize a logger, or set a higher log level:
+
+```
+RUST_LOG=info cargo run
+```
+
+Debug logs provide detailed information about matcher execution, pattern matching, overlap checks, and callback invocations.
 
 ## API
 
-- `ScrollingWindowPatternMatcherRef::find_matches`: Use for value or mixed patterns (requires PartialEq for T)
-- `ScrollingWindowFunctionPatternMatcherRef::find_matches`: Use for function-only patterns (no trait bound required)
+- `ScrollingWindowPatternMatcherRef::find_matches_with_callbacks`: Value/mixed patterns with per-pattern callbacks and overlap settings.
+- `ScrollingWindowFunctionPatternMatcherRef::find_matches_with_callbacks`: Function-only patterns with per-pattern callbacks and overlap settings.
 
 See the test module for more comprehensive examples and edge cases.
