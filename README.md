@@ -47,19 +47,47 @@ These two functions are the core of the crate. Understanding their differences w
 
 **Tip:** If in doubt, use `find_matches` for performance, and `find_matches_flexible` for convenience.
 
+## Choosing an Appropriate `window_len`
+
+The `window_len` parameter in `ScrollingWindowPatternMatcherRef` determines the maximum number of elements (`T`) held in memory at one time for matching. It does **not** directly limit the length of patterns you can match, since partial matches are tracked independently.
+
+### How to Choose `window_len`
+
+- **For most use cases:** Set `window_len` to the length of your input data (e.g., `window.len()` for a slice or vector). This ensures all elements are available for matching and is the most ergonomic choice for batch processing.
+- **For streaming or large datasets:** Use a smaller `window_len` to limit memory usage. The matcher will process data in chunks, but you must ensure your pattern logic can handle matches that span window boundaries (advanced usage).
+- **For single-element processing:** You can set `window_len = 1` to process one element at a time, but this is rarely needed unless you have strict memory constraints or want to implement a custom streaming matcher.
+
+### Trade-offs
+
+- **Larger `window_len`:**
+  - Pros: Simpler API, all data available for matching, best for batch or small datasets.
+  - Cons: Higher memory usage for very large datasets.
+- **Smaller `window_len`:**
+  - Pros: Lower memory usage, suitable for streaming or real-time processing.
+  - Cons: Requires careful handling of partial matches and patterns that span windows.
+
+### Practical Advice
+
+- For most users, set `window_len` to the size of your window or input data.
+- If you need to process data in a streaming fashion, consider implementing logic to handle partial matches across window boundaries.
+- Pattern length is **not** limited by `window_len`—the matcher tracks partial matches as needed.
+
+**Summary:**
+Set `window_len` to match your data size for convenience, or use a smaller value for streaming/low-memory scenarios. Pattern matching will work as long as your logic accounts for the chosen window size.
+
 ## Usage Example
 
 ```rust
-use scrolling_window_pattern_matcher::{PatternBuilder, ScrollingWindowPatternMatcherRef};
+use scrolling_window_pattern_matcher::{PatternBuilderErased, ScrollingWindowPatternMatcherRef};
 let window = vec![1, 2, 2, 2, 3, 4, 5, 6];
 let patterns = vec![
-    PatternBuilder::new()
+    PatternBuilderErased::new()
         .name("triple_twos")
         .value_elem(2)
         .min_repeat(3)
         .capture_name("twos")
         .build(),
-    PatternBuilder::new()
+    PatternBuilderErased::new()
         .name("gap_and_value")
         .any_elem()
         .min_repeat(2) // gap of 2 elements
@@ -90,11 +118,11 @@ See doc comments and tests for more examples.
 - Flexible callback/overlap configuration
 
 ```rust
-use scrolling_window_pattern_matcher::{PatternBuilder, ScrollingWindowPatternMatcherRef};
+use scrolling_window_pattern_matcher::{PatternBuilderErased, ScrollingWindowPatternMatcherRef};
 let window = vec![1, 2, 1, 2, 1];
 let patterns = vec![
-    PatternBuilder::new().value_elem(1).value_elem(2).build(),
-    PatternBuilder::new().value_elem(2).value_elem(1).build(),
+    PatternBuilderErased::new().value_elem(1).value_elem(2).build(),
+    PatternBuilderErased::new().value_elem(2).value_elem(1).build(),
 ];
 let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
 let named = matcher.find_matches(&window, &patterns);
@@ -107,22 +135,16 @@ assert!(named["pattern_1"].len() > 0);
 This example demonstrates using a callback to process matches:
 
 ```rust
-use scrolling_window_pattern_matcher::{PatternBuilder, PatternElem, ScrollingWindowPatternMatcherRef};
-## Example: Function patterns
-
-This example shows how to use function-based patterns:
-
-```rust
-use scrolling_window_pattern_matcher::{Pattern, PatternElem, ScrollingWindowPatternMatcherRef};
+use scrolling_window_pattern_matcher::{PatternBuilderErased, ScrollingWindowPatternMatcherRef};
+let window = vec![1, 2, 1, 2, 1];
 let patterns = vec![
-    Pattern::new(vec![PatternElem::Matcher(Box::new(|x: &i32| *x == 1))]),
-    Pattern::new(vec![PatternElem::Matcher(Box::new(|x: &i32| *x == 4))]),
+    PatternBuilderErased::new().value_elem(1).value_elem(2).build(),
+    PatternBuilderErased::new().value_elem(2).value_elem(1).build(),
 ];
-let window = vec![1, 2, 3, 4];
 let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
-let matches = matcher.find_matches(&window, &patterns);
-assert!(matches.contains(&(0, 0)));
-assert!(matches.contains(&(3, 1)));
+let named = matcher.find_matches(&window, &patterns);
+assert!(named["pattern_0"].len() > 0);
+assert!(named["pattern_1"].len() > 0);
 ```
 
 ## Example: Advanced callback with overlap settings
@@ -132,13 +154,13 @@ This example demonstrates using advanced callback and overlap settings:
 ```rust
 use scrolling_window_pattern_matcher::{PatternBuilder, ScrollingWindowPatternMatcherRef};
 let patterns = vec![
-    PatternBuilder::new()
+    PatternBuilderErased::new()
         .matcher_elem(|x: &i32| *x == 1)
         .matcher_elem(|x: &i32| *x == 2)
         .callback(|matched: &[i32]| println!("Matched: {:?}", matched))
         .overlap(false)
         .build(),
-    PatternBuilder::new()
+    PatternBuilderErased::new()
         .matcher_elem(|x: &i32| *x == 2)
         .matcher_elem(|x: &i32| *x == 3)
         .callback(|matched: &[i32]| println!("Matched: {:?}", matched))
@@ -159,10 +181,10 @@ matcher.find_matches(&window, &patterns);
 use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem};
 let window = vec![&1, &2, &1, &2, &1];
 let patterns = vec![
-    PatternBuilder::new().value_elem(1).value_elem(2).build(),
-    PatternBuilder::new().value_elem(2).value_elem(1).build(),
-    PatternBuilder::new().value_elem(1).build(),
-    PatternBuilder::new().value_elem(2).build(),
+    PatternBuilderErased::new().value_elem(1).value_elem(2).build(),
+    PatternBuilderErased::new().value_elem(2).value_elem(1).build(),
+    PatternBuilderErased::new().value_elem(1).build(),
+    PatternBuilderErased::new().value_elem(2).build(),
 ];
 let matcher = ScrollingWindowPatternMatcherRef::new(5);
 // You can pass Vec, slice, or array for window and patterns:
@@ -172,8 +194,8 @@ let matches = matcher.find_matches(window.as_slice(), patterns.as_slice(), false
 // Or with arrays:
 let arr_window = [&1, &2, &1, &2, &1];
 let arr_patterns = [
-    PatternBuilder::new().value_elem(1).value_elem(2).build(),
-    PatternBuilder::new().value_elem(2).value_elem(1).build(),
+    PatternBuilderErased::new().value_elem(1).value_elem(2).build(),
+    PatternBuilderErased::new().value_elem(2).value_elem(1).build(),
 ```rust
 use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem, Pattern, PatternBuilder};
 use std::rc::Rc;
@@ -183,12 +205,12 @@ let results: Rc<RefCell<Vec<Vec<i32>>>> = Rc::new(RefCell::new(vec![]));
 let results1 = results.clone();
 let results2 = results.clone();
 let patterns = vec![
-    PatternBuilder::new()
+    PatternBuilderErased::new()
         .value_elem(1).value_elem(2)
         .callback(move |matched| results1.borrow_mut().push(matched.to_vec()))
         .overlap(false)
         .build(),
-    PatternBuilder::new()
+    PatternBuilderErased::new()
         .value_elem(2).value_elem(1)
         .callback(move |matched| results2.borrow_mut().push(matched.to_vec()))
         .overlap(true)
@@ -250,8 +272,8 @@ See tests for more comprehensive examples and edge cases.
 
 ```rust
 let patterns = vec![
-    PatternBuilder::new().value_elem(1).value_elem(2).build(),
-    PatternBuilder::new().value_elem(2).value_elem(1).build(),
+    PatternBuilderErased::new().value_elem(1).value_elem(2).build(),
+    PatternBuilderErased::new().value_elem(2).value_elem(1).build(),
 ];
 let window = vec![1, 2, 1, 2, 1];
 let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
@@ -280,8 +302,9 @@ See the tests and examples above for usage patterns.
 This example demonstrates using a callback to process matches:
 
 ```rust
+use scrolling_window_pattern_matcher::{PatternBuilderErased, ScrollingWindowPatternMatcherRef};
 let patterns = vec![
-    PatternBuilder::new()
+    PatternBuilderErased::new()
         .value_elem(1).value_elem(2)
         .callback(Box::new(|matched: &[i32]| println!("Matched: {:?}", matched)))
         .build(),
@@ -296,18 +319,18 @@ matcher.find_matches(&window, &patterns);
 This example shows how to use function-based patterns:
 
 ```rust
-use scrolling_window_pattern_matcher::{PatternBuilder, ScrollingWindowPatternMatcherRef};
+use scrolling_window_pattern_matcher::{PatternBuilderErased, ScrollingWindowPatternMatcherRef};
 let patterns = vec![
-    PatternBuilder::new()
+    PatternBuilderErased::new()
         .matcher_elem(|x: &i32| *x == 1)
         .build(),
-    PatternBuilder::new()
+    PatternBuilderErased::new()
         .matcher_elem(|x: &i32| *x == 4)
         .build(),
 ];
 let window = vec![1, 2, 3, 4];
 let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
-let matches = matcher.find_matches(&window, &patterns);
-assert!(matches.contains(&(0, 0)));
-assert!(matches.contains(&(3, 1)));
+let named = matcher.find_matches(&window, &patterns);
+assert!(named["pattern_0"].len() > 0);
+assert!(named["pattern_1"].len() > 0);
 ```

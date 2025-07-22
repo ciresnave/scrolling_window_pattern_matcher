@@ -60,6 +60,30 @@ impl<T: fmt::Debug> fmt::Debug for PatternElem<T> {
     }
 }
 
+/// Manual implementation of Clone for PatternElem.
+///
+/// - `Value(v)`: Clones the value.
+/// - `Any`: Returns Any.
+/// - `Matcher`: Panics (cannot clone closures).
+impl<T: Clone> Clone for PatternElem<T> {
+    fn clone(&self) -> Self {
+        match self {
+            PatternElem::Value { value, min_repeat, max_repeat, capture_name } => PatternElem::Value {
+                value: value.clone(),
+                min_repeat: *min_repeat,
+                max_repeat: *max_repeat,
+                capture_name: capture_name.clone(),
+            },
+            PatternElem::Any { min_repeat, max_repeat, capture_name } => PatternElem::Any {
+                min_repeat: *min_repeat,
+                max_repeat: *max_repeat,
+                capture_name: capture_name.clone(),
+            },
+            PatternElem::Matcher { .. } => panic!("Cannot clone PatternElem::Matcher"),
+        }
+    }
+}
+
 /// Pattern: a sequence of pattern elements, with optional callback and overlap/deduplication settings
 ///
 /// - `pattern`: Sequence of pattern elements.
@@ -67,15 +91,10 @@ impl<T: fmt::Debug> fmt::Debug for PatternElem<T> {
 /// - `overlap`: If false, prevents overlapping matches for this pattern.
 /// - `deduplication`: If true, prevents duplicate matches for this pattern.
 pub struct Pattern<T> {
-    /// Sequence of pattern elements.
     pub pattern: Vec<PatternElem<T>>,
-    /// Optional callback invoked on match.
     pub callback: Option<SliceCallback<T>>,
-    /// If false, prevents overlapping matches for this pattern.
     pub overlap: bool,
-    /// If true, prevents duplicate matches for this pattern.
     pub deduplication: bool,
-    /// Optional name for this pattern (used in named output).
     pub name: Option<String>,
 }
 
@@ -83,6 +102,18 @@ pub struct Pattern<T> {
 impl<T> AsRef<Pattern<T>> for Pattern<T> {
     fn as_ref(&self) -> &Pattern<T> {
         self
+    }
+}
+
+impl<T: Clone> Clone for Pattern<T> {
+    fn clone(&self) -> Self {
+        Pattern {
+            pattern: self.pattern.clone(),
+            callback: None, // Cannot clone callback
+            overlap: self.overlap,
+            deduplication: self.deduplication,
+            name: self.name.clone(),
+        }
     }
 }
 
@@ -119,21 +150,155 @@ impl<T> Pattern<T> {
     }
 }
 
+/// Type alias for a callback on a slice
+///
+/// The callback receives a slice of matched window elements.
+pub type SliceCallback<T> = Box<dyn Fn(&[T]) + 'static>;
+
 /// Builder for Pattern<T>
 ///
 /// Use this builder to construct complex patterns with custom callbacks, overlap, and deduplication settings.
-pub struct PatternBuilder<T> {
-    /// Builder for constructing complex patterns with repeat, gap, and capture settings.
-    // ...existing fields...
-    pattern: Vec<PatternElem<T>>,
-    callback: Option<SliceCallback<T>>,
+pub struct PatternBuilderErased {
     overlap: bool,
     deduplication: bool,
     name: Option<String>,
 }
 
+impl PatternBuilderErased {
+    /// Creates a new builder with default settings (overlap: true, deduplication: false, no name).
+    pub fn new() -> Self {
+        Self {
+            overlap: true,
+            deduplication: false,
+            name: None,
+        }
+    }
+
+    /// Starts a new pattern with a value element. Consumes the erased builder and returns a typed builder.
+    /// Usage: PatternBuilderErased::new().value_elem(42)
+    pub fn value_elem<T>(self, value: T) -> PatternBuilder<T> {
+        PatternBuilder {
+            pattern: vec![PatternElem::Value {
+                value,
+                min_repeat: None,
+                max_repeat: None,
+                capture_name: None,
+            }],
+            callback: None,
+            overlap: self.overlap,
+            deduplication: self.deduplication,
+            name: self.name,
+        }
+    }
+
+    /// Starts a new pattern with a matcher element (custom predicate). Consumes the erased builder and returns a typed builder.
+    /// Usage: PatternBuilderErased::new().matcher_elem(|x| *x > 0)
+    pub fn matcher_elem<T, F>(self, matcher: F) -> PatternBuilder<T>
+    where
+        F: Fn(&T) -> bool + 'static,
+    {
+        PatternBuilder {
+            pattern: vec![PatternElem::Matcher {
+                matcher: Box::new(matcher),
+                min_repeat: None,
+                max_repeat: None,
+                capture_name: None,
+            }],
+            callback: None,
+            overlap: self.overlap,
+            deduplication: self.deduplication,
+            name: self.name,
+        }
+    }
+
+    /// Starts a new pattern with an 'any' (wildcard) element. Consumes the erased builder and returns a typed builder.
+    /// Usage: PatternBuilderErased::new().any_elem()
+    pub fn any_elem<T>(self) -> PatternBuilder<T> {
+        PatternBuilder {
+            pattern: vec![PatternElem::Any {
+                min_repeat: None,
+                max_repeat: None,
+                capture_name: None,
+            }],
+            callback: None,
+            overlap: self.overlap,
+            deduplication: self.deduplication,
+            name: self.name,
+        }
+    }
+
+    /// Sets the name for the pattern (used for output keys). Can be chained before adding an element.
+    /// Usage: PatternBuilderErased::new().name("foo").value_elem(1)
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Sets whether overlapping matches are allowed for this pattern. Can be chained before adding an element.
+    /// Usage: PatternBuilderErased::new().overlap(false).value_elem(1)
+    pub fn overlap(mut self, allow: bool) -> Self {
+        self.overlap = allow;
+        self
+    }
+
+    /// Sets whether deduplication is enabled for this pattern. Can be chained before adding an element.
+    /// Usage: PatternBuilderErased::new().deduplication(true).value_elem(1)
+    pub fn deduplication(mut self, enable: bool) -> Self {
+        self.deduplication = enable;
+        self
+    }
+}
+
+/// Ergonomic builder for Pattern<T>
+///
+/// All fields and methods are public for chaining and ergonomic usage.
+pub struct PatternBuilder<T> {
+    pub pattern: Vec<PatternElem<T>>,
+    pub callback: Option<SliceCallback<T>>,
+    pub overlap: bool,
+    pub deduplication: bool,
+    pub name: Option<String>,
+}
+
 impl<T> PatternBuilder<T> {
-    /// Add a value element to the pattern.
+    /// Set the minimum repeat count for the last pattern element
+    pub fn min_repeat(mut self, min: usize) -> Self {
+        if let Some(last) = self.pattern.last_mut() {
+            match last {
+                PatternElem::Value { min_repeat, .. } => *min_repeat = Some(min),
+                PatternElem::Matcher { min_repeat, .. } => *min_repeat = Some(min),
+                PatternElem::Any { min_repeat, .. } => *min_repeat = Some(min),
+            }
+        }
+        self
+    }
+    /// Set the maximum repeat count for the last pattern element
+    pub fn max_repeat(mut self, max: usize) -> Self {
+        if let Some(last) = self.pattern.last_mut() {
+            match last {
+                PatternElem::Value { max_repeat, .. } => *max_repeat = Some(max),
+                PatternElem::Matcher { max_repeat, .. } => *max_repeat = Some(max),
+                PatternElem::Any { max_repeat, .. } => *max_repeat = Some(max),
+            }
+        }
+        self
+    }
+    /// Set the capture name for the last pattern element
+    pub fn capture_name(mut self, name: impl Into<String>) -> Self {
+        if let Some(last) = self.pattern.last_mut() {
+            match last {
+                PatternElem::Value { capture_name, .. } => *capture_name = Some(name.into()),
+                PatternElem::Matcher { capture_name, .. } => *capture_name = Some(name.into()),
+                PatternElem::Any { capture_name, .. } => *capture_name = Some(name.into()),
+            }
+        }
+        self
+    }
+    /// Set a callback for the pattern
+    pub fn callback(mut self, cb: SliceCallback<T>) -> Self {
+        self.callback = Some(cb);
+        self
+    }
     pub fn value_elem(mut self, value: T) -> Self {
         self.pattern.push(PatternElem::Value {
             value,
@@ -143,7 +308,6 @@ impl<T> PatternBuilder<T> {
         });
         self
     }
-    /// Add a matcher element to the pattern.
     pub fn matcher_elem<F>(mut self, matcher: F) -> Self
     where
         F: Fn(&T) -> bool + 'static,
@@ -156,7 +320,6 @@ impl<T> PatternBuilder<T> {
         });
         self
     }
-    /// Add an any (wildcard) element to the pattern.
     pub fn any_elem(mut self) -> Self {
         self.pattern.push(PatternElem::Any {
             min_repeat: None,
@@ -165,93 +328,6 @@ impl<T> PatternBuilder<T> {
         });
         self
     }
-    /// Set minimum repeat for the last element added to the pattern.
-    pub fn min_repeat(mut self, min: usize) -> Self {
-        if let Some(last) = self.pattern.last_mut() {
-            match last {
-                PatternElem::Value { min_repeat, .. } => *min_repeat = Some(min),
-                PatternElem::Matcher { min_repeat, .. } => *min_repeat = Some(min),
-                PatternElem::Any { min_repeat, .. } => *min_repeat = Some(min),
-            }
-        }
-        self
-    }
-    /// Set maximum repeat for the last element added to the pattern.
-    pub fn max_repeat(mut self, max: usize) -> Self {
-        if let Some(last) = self.pattern.last_mut() {
-            match last {
-                PatternElem::Value { max_repeat, .. } => *max_repeat = Some(max),
-                PatternElem::Matcher { max_repeat, .. } => *max_repeat = Some(max),
-                PatternElem::Any { max_repeat, .. } => *max_repeat = Some(max),
-            }
-        }
-        self
-    }
-    /// Add a value element to the pattern.
-    ///
-    /// Use builder methods like `min_repeat`, `max_repeat`, and `capture_name` to configure constraints for the last element.
-    /// Add a matcher element to the pattern.
-    ///
-    /// Use builder methods like `min_repeat`, `max_repeat`, and `capture_name` to configure constraints for the last element.
-    /// Add an any (wildcard) element to the pattern.
-    ///
-    /// Use builder methods like `min_repeat`, `max_repeat`, and `capture_name` to configure constraints for the last element.
-    /// Set minimum repeat for the last element added to the pattern.
-    /// Set maximum repeat for the last element added to the pattern.
-    /// Set capture name for the last element added to the pattern.
-
-
-    /// Set capture_name for the last element
-    pub fn capture_name(mut self, name: impl Into<String>) -> Self {
-        if let Some(last) = self.pattern.last_mut() {
-            let name_str = Some(name.into());
-            match last {
-                PatternElem::Value { capture_name, .. } => *capture_name = name_str,
-                PatternElem::Matcher { capture_name, .. } => *capture_name = name_str,
-                PatternElem::Any { capture_name, .. } => *capture_name = name_str,
-            }
-        }
-        self
-    }
-    /// Create a new builder
-    pub fn new() -> Self {
-        Self {
-            pattern: Vec::new(),
-            callback: None,
-            overlap: true,
-            deduplication: false,
-            name: None,
-        }
-    }
-    /// Set the name for this pattern
-    pub fn name(mut self, name: impl Into<String>) -> Self {
-        self.name = Some(name.into());
-        self
-    }
-    /// Set the pattern elements
-    pub fn pattern(mut self, elems: Vec<PatternElem<T>>) -> Self {
-        self.pattern = elems;
-        self
-    }
-    /// Set the callback
-    pub fn callback<F>(mut self, cb: F) -> Self
-    where
-        F: Fn(&[T]) + 'static,
-    {
-        self.callback = Some(Box::new(cb));
-        self
-    }
-    /// Set overlap behavior
-    pub fn overlap(mut self, allow: bool) -> Self {
-        self.overlap = allow;
-        self
-    }
-    /// Set deduplication behavior
-    pub fn deduplication(mut self, enable: bool) -> Self {
-        self.deduplication = enable;
-        self
-    }
-    /// Build the pattern
     pub fn build(self) -> Pattern<T> {
         Pattern {
             pattern: self.pattern,
@@ -261,12 +337,19 @@ impl<T> PatternBuilder<T> {
             name: self.name,
         }
     }
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+    pub fn overlap(mut self, allow: bool) -> Self {
+        self.overlap = allow;
+        self
+    }
+    pub fn deduplication(mut self, enable: bool) -> Self {
+        self.deduplication = enable;
+        self
+    }
 }
-
-/// Type alias for a callback on a slice
-///
-/// The callback receives a slice of matched window elements.
-pub type SliceCallback<T> = Box<dyn Fn(&[T]) + 'static>;
 
 /// The main matcher struct
 ///
@@ -277,7 +360,6 @@ pub struct ScrollingWindowPatternMatcherRef {
 }
 
 impl ScrollingWindowPatternMatcherRef {
-
     /// Find matches and return named captures in a HashMap output format.
     ///
     /// Output: `HashMap<pattern_name, Vec<HashMap<capture_name, Vec<T>>>>`
@@ -385,11 +467,11 @@ impl ScrollingWindowPatternMatcherRef {
     /// # Examples
     ///
     /// ```rust
-    /// use scrolling_window_pattern_matcher::{PatternBuilder, ScrollingWindowPatternMatcherRef};
+    /// use scrolling_window_pattern_matcher::{PatternBuilderErased, ScrollingWindowPatternMatcherRef};
     /// let window = vec![1, 2, 1, 2, 1];
     /// let patterns = vec![
-    ///     PatternBuilder::new().value_elem(1).value_elem(2).build(),
-    ///     PatternBuilder::new().value_elem(2).value_elem(1).build(),
+    ///     PatternBuilderErased::new().value_elem(1).value_elem(2).build(),
+    ///     PatternBuilderErased::new().value_elem(2).value_elem(1).build(),
     /// ];
     /// let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
     /// let named = matcher.find_matches_flexible(window, &patterns);
@@ -415,49 +497,6 @@ impl ScrollingWindowPatternMatcherRef {
         // Use find_matches, which now calls callbacks
         self.find_matches(&window_vec, &patterns_vec)
     }
-
 }
 
 // Re-export major types and builders for crate consumers
-
-// Manual Clone for PatternElem, skipping Matcher
-/// Manual implementation of Clone for PatternElem.
-///
-/// - `Value(v)`: Clones the value.
-/// - `Any`: Returns Any.
-/// - `Matcher`: Panics (cannot clone closures).
-impl<T: Clone> Clone for PatternElem<T> {
-    fn clone(&self) -> Self {
-        match self {
-            PatternElem::Value { value, min_repeat, max_repeat, capture_name } => PatternElem::Value {
-                value: value.clone(),
-                min_repeat: *min_repeat,
-                max_repeat: *max_repeat,
-                capture_name: capture_name.clone(),
-            },
-            PatternElem::Any { min_repeat, max_repeat, capture_name } => PatternElem::Any {
-                min_repeat: *min_repeat,
-                max_repeat: *max_repeat,
-                capture_name: capture_name.clone(),
-            },
-            PatternElem::Matcher { .. } => panic!("Cannot clone PatternElem::Matcher"),
-        }
-    }
-}
-
-// Manual Clone for Pattern, skipping callback
-/// Manual implementation of Clone for Pattern.
-///
-/// - Clones pattern elements, overlap, and deduplication settings.
-/// - Callback is not cloned (set to None).
-impl<T: Clone> Clone for Pattern<T> {
-    fn clone(&self) -> Self {
-        Pattern {
-            pattern: self.pattern.clone(),
-            callback: None, // Cannot clone callback
-            overlap: self.overlap,
-            deduplication: self.deduplication,
-            name: self.name.clone(),
-        }
-    }
-}
