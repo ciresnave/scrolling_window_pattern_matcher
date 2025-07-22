@@ -68,7 +68,7 @@ let patterns = vec![
         .build(),
 ];
 let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
-let named = matcher.find_matches(&window, &patterns);
+let named = matcher.find_named_matches(&window, &patterns);
 assert!(named.contains_key("triple_twos"));
 let twos_matches = &named["triple_twos"];
 assert!(twos_matches.iter().any(|m| m["twos"] == vec![2,2,2]));
@@ -90,16 +90,16 @@ See doc comments and tests for more examples.
 - Flexible callback/overlap configuration
 
 ```rust
-use scrolling_window_pattern_matcher::{PatternBuilder, ScrollingWindowPatternMatcherRef};
-let window = vec![1, 2, 1, 2, 1];
+use scrolling_window_pattern_matcher::{Pattern, PatternElem, ScrollingWindowPatternMatcherRef};
 let patterns = vec![
     PatternBuilder::new().value_elem(1).value_elem(2).build(),
     PatternBuilder::new().value_elem(2).value_elem(1).build(),
 ];
+let window = vec![1, 2, 1, 2, 1];
 let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
-let named = matcher.find_matches(&window, &patterns);
-assert!(named["pattern_0"].len() > 0);
-assert!(named["pattern_1"].len() > 0);
+let matches = matcher.find_matches(&window, &patterns);
+assert!(matches.contains(&(0, 0))); // [1,2] at 0
+assert!(matches.contains(&(1, 1))); // [2,1] at 1
 ```
 
 ## Example: Callback pattern
@@ -246,19 +246,14 @@ See tests for more comprehensive examples and edge cases.
 - Window and patterns can be Vec, slice, or array
 - Gaps are represented by PatternElem::Any with repeat settings
 
-## Example: Value patterns
-
-```rust
-let patterns = vec![
-    PatternBuilder::new().value_elem(1).value_elem(2).build(),
-    PatternBuilder::new().value_elem(2).value_elem(1).build(),
-];
-let window = vec![1, 2, 1, 2, 1];
-let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
-let named = matcher.find_matches(&window, &patterns);
-assert!(named["pattern_0"].len() > 0);
-assert!(named["pattern_1"].len() > 0);
-```
+//! ## Example: Value patterns
+//! let patterns = vec![
+//!     PatternBuilder::new().value_elem(1).value_elem(2).build(),
+//!     Pattern::new(vec![&2, &1]),
+//! ];
+//! let matches = matcher.find_matches(&window, &patterns);
+//! assert!(matches.contains(&(0, 0))); // [1,2] at 0
+//! assert!(matches.contains(&(1, 1))); // [2,1] at 1
 
 ## Planned Features (Not Yet Implemented)
 
