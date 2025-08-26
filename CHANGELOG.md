@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.0.0] - 2025-01-XX
 
 ### Changed
+
 - **BREAKING:** Complete API rewrite with extractor-driven architecture
 - **BREAKING:** Field-based pattern syntax replaced with settings builders
 - **BREAKING:** Callback system replaced with powerful extractor functions
@@ -16,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** Pattern elements now use `ElementSettings` and `PatternSettings` for configuration
 
 ### Added
+
 - Advanced extractor system with `ExtractorAction` enum
 - Rich context information through `MatchState` struct
 - Dynamic pattern manipulation (add/remove patterns at runtime)
@@ -28,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Extensive documentation and examples
 
 ### Removed
+
 - **BREAKING:** Field-based pattern configuration (e.g., `minimum_repeat`, `maximum_repeat`, `greedy`)
 - **BREAKING:** Callback-based matching system
 - **BREAKING:** Direct result return from matching operations
@@ -36,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Migration Guide
 
 #### Version 1.x (Old API)
+
 ```rust
 use scrolling_window_pattern_matcher::{Matcher, PatternElement};
 
@@ -54,6 +58,7 @@ let results = matcher.match_window(&data);
 ```
 
 #### Version 2.x (New API)
+
 ```rust
 use scrolling_window_pattern_matcher::{ElementSettings, Matcher, PatternElement};
 
@@ -71,6 +76,7 @@ let result = matcher.run(&data); // Returns Result<(), MatcherError>
 ```
 
 For callbacks, use extractors:
+
 ```rust
 // Version 2.x: Using extractors instead of callbacks
 let extractor = Box::new(|state: &MatchState<i32>| {
