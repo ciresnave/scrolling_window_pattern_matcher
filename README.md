@@ -1,336 +1,431 @@
 # ScrollingWindowPatternMatcher
 
-A flexible, ergonomic pattern matcher for slices, arrays, and windows, supporting wildcards, custom logic, and builder patterns.
+A flexible pattern matching library for Rust with an advanced extractor system for dynamic behavior modification. This library allows you to create complex patterns that match against sequences of data, with powerful extractor functions that can modify matching behavior at runtime.
 
-## Features
+## 🚨 Major Version 2.0 Rewrite
 
-- Wildcard matching (`PatternElem::Any`)
-- Flexible matcher signatures: pass window and patterns as Vec, slice, or array, and patterns as owned or referenced
-- Ergonomic builder patterns
-- Custom matcher logic
-- Flexible callback and overlap configuration
+**This is a complete rewrite from version 1.x with breaking API changes.** The previous field-based pattern syntax has been replaced with a settings-based approach, and the callback system has been replaced with a more powerful extractor architecture.
 
-## Choosing Between `find_matches` and `find_matches_flexible`
+### Migration from 1.x
 
-These two functions are the core of the crate. Understanding their differences will help you select the right one for your use case:
+The API has fundamentally changed. Please see the examples and documentation below for the new approach.
 
-### `find_matches`
+## ✨ Features
 
-- **Signature:** `find_matches(&self, window: &[T], patterns: &[Pattern<T>])`
-- **Accepts:** Slices (`&[T]`) for both window and patterns.
-- **Performance:** Zero-copy; does not clone window elements. Efficient for large windows.
-- **Trait Bounds:** Only requires `T: PartialEq + Clone` for matching logic.
-- **Use When:**
-  - You already have slices or references to arrays/Vectors.
-  - You want maximum performance and minimal memory usage.
-  - Your element type is not `Clone`.
-- **Limitation:** Cannot accept owned containers directly (e.g., `Vec<T>` by value); must convert to a slice first.
+- **Extractor-driven architecture** - Dynamic modification of matching behavior through extractor functions
+- **Settings-based configuration** - Clean builder pattern for pattern element configuration
+- **Rich pattern elements** - Values, functions, pattern references, wildcards, and nested repeats
+- **Advanced extractor actions** - Continue, Skip, Jump, pattern manipulation, and flow control
+- **Comprehensive error handling** - Detailed error types with proper error propagation
+- **Zero-copy when possible** - Efficient matching with minimal allocations
+- **Priority-based matching** - Control pattern matching order with priority settings
 
-### `find_matches_flexible`
-
-- **Signature:** `find_matches_flexible(&self, window: W, patterns: P)` where `W: IntoIterator, W::Item: Borrow<T>`
-- **Accepts:** Owned containers (`Vec<T>`, arrays), references to containers (`&Vec<T>`, `&[T]`), or slices.
-- **Performance:** Clones all window elements into a new `Vec<T>`; may use more memory for large windows.
-- **Trait Bounds:** Requires `T: Clone + PartialEq`.
-- **Use When:**
-  - You want ergonomic API and flexibility in passing owned or referenced data.
-  - You don't mind cloning window elements.
-  - You want to avoid manual conversion to slices.
-- **Limitation:** Requires `T: Clone`; may be less efficient for large windows or non-cloneable types.
-
-### Summary Table
-
-| Function                | Accepts           | Performance   | Requires `T: Clone` | Use When                      |
-|------------------------ |------------------ |-------------- |-------------------- |-------------------------------|
-| `find_matches`          | Slices            | Zero-copy     | No (unless callback)| You have slices, want speed   |
-| `find_matches_flexible` | Owned or borrowed | Clones window | Yes                | You want ergonomic flexibility|
-
-**Tip:** If in doubt, use `find_matches` for performance, and `find_matches_flexible` for convenience.
-
-## Choosing an Appropriate `window_len`
-
-The `window_len` parameter in `ScrollingWindowPatternMatcherRef` determines the maximum number of elements (`T`) held in memory at one time for matching. It does **not** directly limit the length of patterns you can match, since partial matches are tracked independently.
-
-### How to Choose `window_len`
-
-- **For most use cases:** Set `window_len` to the length of your input data (e.g., `window.len()` for a slice or vector). This ensures all elements are available for matching and is the most ergonomic choice for batch processing.
-- **For streaming or large datasets:** Use a smaller `window_len` to limit memory usage. The matcher will process data in chunks, but you must ensure your pattern logic can handle matches that span window boundaries (advanced usage).
-- **For single-element processing:** You can set `window_len = 1` to process one element at a time, but this is rarely needed unless you have strict memory constraints or want to implement a custom streaming matcher.
-
-### Trade-offs
-
-- **Larger `window_len`:**
-  - Pros: Simpler API, all data available for matching, best for batch or small datasets.
-  - Cons: Higher memory usage for very large datasets.
-- **Smaller `window_len`:**
-  - Pros: Lower memory usage, suitable for streaming or real-time processing.
-  - Cons: Requires careful handling of partial matches and patterns that span windows.
-
-### Practical Advice
-
-- For most users, set `window_len` to the size of your window or input data.
-- If you need to process data in a streaming fashion, consider implementing logic to handle partial matches across window boundaries.
-- Pattern length is **not** limited by `window_len`—the matcher tracks partial matches as needed.
-
-**Summary:**
-Set `window_len` to match your data size for convenience, or use a smaller value for streaming/low-memory scenarios. Pattern matching will work as long as your logic accounts for the chosen window size.
-
-## Usage Example
+## 🚀 Quick Start
 
 ```rust
-use scrolling_window_pattern_matcher::{PatternBuilderErased, ScrollingWindowPatternMatcherRef};
-let window = vec![1, 2, 2, 2, 3, 4, 5, 6];
-let patterns = vec![
-    PatternBuilderErased::new()
-        .name("triple_twos")
-        .value_elem(2)
-        .min_repeat(3)
-        .capture_name("twos")
-        .build(),
-    PatternBuilderErased::new()
-        .name("gap_and_value")
-        .any_elem()
-        .min_repeat(2) // gap of 2 elements
-        .value_elem(3)
-        .capture_name("three")
-        .build(),
-];
-let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
-let named = matcher.find_matches(&window, &patterns);
-assert!(named.contains_key("triple_twos"));
-let twos_matches = &named["triple_twos"];
-assert!(twos_matches.iter().any(|m| m["twos"] == vec![2,2,2]));
-assert!(named.contains_key("gap_and_value"));
-let gap_matches = &named["gap_and_value"];
-assert!(gap_matches.iter().any(|m| m["three"] == vec![3]));
+use scrolling_window_pattern_matcher::{ElementSettings, Matcher, PatternElement};
+
+// Create a matcher
+let mut matcher = Matcher::new();
+
+// Add a pattern to find the value 42
+matcher.add_pattern(
+    "find_42".to_string(),
+    vec![PatternElement::Value {
+        value: 42,
+        settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
+    }]
+);
+
+// Match against data
+let data = vec![1, 42, 3, 42, 5];
+let result = matcher.run(&data);
+assert!(result.is_ok());
 ```
 
-## Documentation
+## 🏗️ Pattern Elements
 
-See doc comments and tests for more examples.
+### Value
 
-## Planned Features
-
-### Advanced Features
-
-- Ergonomic builder API for repeat and capture settings (gaps are represented by PatternElem::Any with repeat settings)
-- Named patterns and named captures
-- Flexible callback/overlap configuration
+Matches a specific value:
 
 ```rust
-use scrolling_window_pattern_matcher::{PatternBuilderErased, ScrollingWindowPatternMatcherRef};
-let window = vec![1, 2, 1, 2, 1];
-let patterns = vec![
-    PatternBuilderErased::new().value_elem(1).value_elem(2).build(),
-    PatternBuilderErased::new().value_elem(2).value_elem(1).build(),
-];
-let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
-let named = matcher.find_matches(&window, &patterns);
-assert!(named["pattern_0"].len() > 0);
-assert!(named["pattern_1"].len() > 0);
+PatternElement::Value {
+    value: 42,
+    settings: Some(
+        ElementSettings::new()
+            .min_repeat(1)     // Must match at least this many times
+            .max_repeat(3)     // Match at most this many times
+            .greedy(true)      // Match as many as possible (true) or as few as possible (false)
+            .priority(10)      // Lower numbers = higher priority
+    ),
+}
 ```
 
-## Example: Callback pattern
+### Function
 
-This example demonstrates using a callback to process matches:
+Matches using custom logic:
 
 ```rust
-use scrolling_window_pattern_matcher::{PatternBuilderErased, ScrollingWindowPatternMatcherRef};
-let window = vec![1, 2, 1, 2, 1];
-let patterns = vec![
-    PatternBuilderErased::new().value_elem(1).value_elem(2).build(),
-    PatternBuilderErased::new().value_elem(2).value_elem(1).build(),
-];
-let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
-let named = matcher.find_matches(&window, &patterns);
-assert!(named["pattern_0"].len() > 0);
-assert!(named["pattern_1"].len() > 0);
+PatternElement::Function {
+    function: Box::new(|x: &i32| x % 2 == 0),  // Custom predicate function
+    settings: Some(
+        ElementSettings::new()
+            .min_repeat(1)
+            .max_repeat(5)
+            .greedy(true)
+    ),
+}
 ```
 
-## Example: Advanced callback with overlap settings
+### Any
 
-This example demonstrates using advanced callback and overlap settings:
+Wildcard matching:
 
 ```rust
-use scrolling_window_pattern_matcher::{PatternBuilder, ScrollingWindowPatternMatcherRef};
-let patterns = vec![
-    PatternBuilderErased::new()
-        .matcher_elem(|x: &i32| *x == 1)
-        .matcher_elem(|x: &i32| *x == 2)
-        .callback(|matched: &[i32]| println!("Matched: {:?}", matched))
-        .overlap(false)
-        .build(),
-    PatternBuilderErased::new()
-        .matcher_elem(|x: &i32| *x == 2)
-        .matcher_elem(|x: &i32| *x == 3)
-        .callback(|matched: &[i32]| println!("Matched: {:?}", matched))
-        .overlap(true)
-        .build(),
-];
-let window = vec![1, 2, 3, 4];
-let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
-matcher.find_matches(&window, &patterns);
+PatternElement::Any {
+    settings: Some(
+        ElementSettings::new()
+            .min_repeat(1)     // Match any 1-3 consecutive items
+            .max_repeat(3)
+            .greedy(false)
+    ),
+}
 ```
 
-- No unnecessary trait bounds: PartialEq is only required for value-based patterns
-- Accepts Vec, slice, or array for both window and patterns (no manual conversion needed)
+### Pattern Reference
 
-## Usage: Value/Mixed Patterns with Multiple Patterns
+References another named pattern:
 
 ```rust
-use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem};
-let window = vec![&1, &2, &1, &2, &1];
-let patterns = vec![
-    PatternBuilderErased::new().value_elem(1).value_elem(2).build(),
-    PatternBuilderErased::new().value_elem(2).value_elem(1).build(),
-    PatternBuilderErased::new().value_elem(1).build(),
-    PatternBuilderErased::new().value_elem(2).build(),
-];
-let matcher = ScrollingWindowPatternMatcherRef::new(5);
-// You can pass Vec, slice, or array for window and patterns:
-let matches = matcher.find_matches(&window, &patterns, false, None::<fn(usize, usize)>);
-// Or:
-let matches = matcher.find_matches(window.as_slice(), patterns.as_slice(), false, None::<fn(usize, usize)>);
-// Or with arrays:
-let arr_window = [&1, &2, &1, &2, &1];
-let arr_patterns = [
-    PatternBuilderErased::new().value_elem(1).value_elem(2).build(),
-    PatternBuilderErased::new().value_elem(2).value_elem(1).build(),
-```rust
-use scrolling_window_pattern_matcher::{ScrollingWindowPatternMatcherRef, PatternElem, Pattern, PatternBuilder};
-use std::rc::Rc;
-use std::cell::RefCell;
-let window = vec![1, 2, 1, 2, 1];
-let results: Rc<RefCell<Vec<Vec<i32>>>> = Rc::new(RefCell::new(vec![]));
-let results1 = results.clone();
-let results2 = results.clone();
-let patterns = vec![
-    PatternBuilderErased::new()
-        .value_elem(1).value_elem(2)
-        .callback(move |matched| results1.borrow_mut().push(matched.to_vec()))
-        .overlap(false)
-        .build(),
-    PatternBuilderErased::new()
-        .value_elem(2).value_elem(1)
-        .callback(move |matched| results2.borrow_mut().push(matched.to_vec()))
-        .overlap(true)
-        .build(),
-];
-let matcher = ScrollingWindowPatternMatcherRef::new(5);
-matcher.find_matches(&window, &patterns);
-let results = results.borrow();
-assert!(results.contains(&vec![1, 2]));
-assert!(results.contains(&vec![2, 1]));
+PatternElement::Pattern {
+    pattern: "other_pattern_name".to_string(),
+    settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
+}
 ```
 
-## Overlap Settings
+### Repeat
 
-- `allow_overlap_with_others`: If false, this pattern will not match if it would overlap with any previous match.
-- `allow_others_to_overlap`: If false, once this pattern matches, no future matches can overlap its matched region.
-
-## Debug Logging
-
-This crate uses the [log](https://docs.rs/log/) crate for debug logging. To enable debug output during development, add the following to your main function or test harness:
+Repeats a nested pattern element:
 
 ```rust
-env_logger::init();
+PatternElement::Repeat {
+    element: Box::new(PatternElement::Value {
+        value: 5,
+        settings: None,
+    }),
+    settings: Some(
+        ElementSettings::new()
+            .min_repeat(2)
+            .max_repeat(4)
+            .greedy(true)
+    ),
+}
 ```
 
-Then run your program or tests with:
+## ⚡ Extractor System
 
-``` Bash
-RUST_LOG=debug cargo test
-```
+The extractor system is the core feature that allows dynamic modification of matching behavior:
 
-To disable logging (e.g., in production), do not initialize a logger, or set a higher log level:
-
-``` Bash
-RUST_LOG=info cargo run
-```
-
-Debug logs provide detailed information about matcher execution, pattern matching, overlap checks, and callback invocations.
-
-## API
-
-- `find_matches`: Use for value or mixed patterns (requires PartialEq for T), supports multiple patterns and multi-element patterns. Accepts any type convertible to a slice for window and patterns.
-- `find_named_matches`: Returns named pattern/capture results as `HashMap<String, Vec<HashMap<String, Vec<T>>>>`.
-
-See tests for more comprehensive examples and edge cases.
-
-## Edge Cases
-
-- Empty window or patterns: returns no matches
-- Patterns can be all values, all functions, or mixed
-- Multiple patterns and multi-element patterns supported
-- Deduplication and overlap settings can be combined
-- Patterns of length 1 and longer are supported
-- Overlap exclusion can prevent some matches (see tests)
-- Window and patterns can be Vec, slice, or array
-- Gaps are represented by PatternElem::Any with repeat settings
-
-## Example: Value patterns
+### Basic Extractor
 
 ```rust
-let patterns = vec![
-    PatternBuilderErased::new().value_elem(1).value_elem(2).build(),
-    PatternBuilderErased::new().value_elem(2).value_elem(1).build(),
-];
-let window = vec![1, 2, 1, 2, 1];
-let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
-let named = matcher.find_matches(&window, &patterns);
-assert!(named["pattern_0"].len() > 0);
-assert!(named["pattern_1"].len() > 0);
+use scrolling_window_pattern_matcher::{ExtractorAction, MatchState};
+
+let extractor = Box::new(|state: &MatchState<i32>| {
+    println!("Matched at position {}: {:?}",
+             state.current_position,
+             state.matched_items);
+    Ok(ExtractorAction::Continue)
+});
+
+let pattern = vec![PatternElement::Value {
+    value: 42,
+    settings: Some(ElementSettings::new().extractor(extractor)),
+}];
 ```
 
-## Planned Features (Not Yet Implemented)
+### Extractor Actions
 
-All currently planned features have been implemented.
+#### Continue
 
-If you need additional features, please open an issue so we can discuss it!
-
-## API Reference
-
-All major types and builders are available at the crate root:
-
-- `Pattern`, `PatternBuilder`
-- `PatternElem` (struct-style variants; gaps are represented by PatternElem::Any with repeat settings)
-- `ScrollingWindowPatternMatcherRef`
-- `Callback`, `SliceCallback`
-
-See the tests and examples above for usage patterns.
-
-This example demonstrates using a callback to process matches:
+Continue normal matching:
 
 ```rust
-use scrolling_window_pattern_matcher::{PatternBuilderErased, ScrollingWindowPatternMatcherRef};
-let patterns = vec![
-    PatternBuilderErased::new()
-        .value_elem(1).value_elem(2)
-        .callback(Box::new(|matched: &[i32]| println!("Matched: {:?}", matched)))
-        .build(),
-];
-let window = vec![1, 2, 1, 2, 1];
-let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
-matcher.find_matches(&window, &patterns);
+Ok(ExtractorAction::Continue)
 ```
 
-## Example: Function patterns
+#### Skip
 
-This example shows how to use function-based patterns:
+Skip ahead by N positions:
 
 ```rust
-use scrolling_window_pattern_matcher::{PatternBuilderErased, ScrollingWindowPatternMatcherRef};
-let patterns = vec![
-    PatternBuilderErased::new()
-        .matcher_elem(|x: &i32| *x == 1)
-        .build(),
-    PatternBuilderErased::new()
-        .matcher_elem(|x: &i32| *x == 4)
-        .build(),
-];
-let window = vec![1, 2, 3, 4];
-let matcher = ScrollingWindowPatternMatcherRef::new(window.len());
-let named = matcher.find_matches(&window, &patterns);
-assert!(named["pattern_0"].len() > 0);
-assert!(named["pattern_1"].len() > 0);
+Ok(ExtractorAction::Skip(3))  // Skip 3 positions ahead
 ```
+
+#### Jump
+
+Jump relative to current position:
+
+```rust
+Ok(ExtractorAction::Jump(-2))  // Jump back 2 positions
+Ok(ExtractorAction::Jump(5))   // Jump forward 5 positions
+```
+
+#### Pattern Manipulation
+
+Add or remove patterns dynamically:
+
+```rust
+// Add a new pattern
+Ok(ExtractorAction::AddPattern(
+    "new_pattern".to_string(),
+    Pattern::new(vec![/* pattern elements */])
+))
+
+// Remove a pattern
+Ok(ExtractorAction::RemovePattern("old_pattern".to_string()))
+```
+
+#### Flow Control
+
+```rust
+Ok(ExtractorAction::StopMatching)           // Stop all matching
+Ok(ExtractorAction::DiscardPartialMatch)    // Discard current match
+Ok(ExtractorAction::RestartFrom(0))         // Restart from specific position
+```
+
+### Match State Information
+
+Extractors receive rich context information:
+
+```rust
+let extractor = Box::new(|state: &MatchState<i32>| {
+    println!("Current position: {}", state.current_position);
+    println!("Matched items: {:?}", state.matched_items);
+    println!("Pattern name: {}", state.pattern_name);
+    println!("Element index: {}", state.element_index);
+    println!("Input length: {}", state.input_length);
+    Ok(ExtractorAction::Continue)
+});
+```
+
+## 🔧 Complex Examples
+
+### Multi-element Pattern
+
+```rust
+// Pattern: value 1, then any item, then value 3
+matcher.add_pattern(
+    "one_any_three".to_string(),
+    vec![
+        PatternElement::Value {
+            value: 1,
+            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
+        },
+        PatternElement::Any {
+            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
+        },
+        PatternElement::Value {
+            value: 3,
+            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
+        },
+    ]
+);
+```
+
+### Advanced Extractor Usage
+
+```rust
+use scrolling_window_pattern_matcher::{ExtractorAction, ExtractorError, MatchState};
+
+// Extractor that logs matches and skips ahead
+let logging_extractor = Box::new(|state: &MatchState<i32>| -> Result<ExtractorAction<i32>, ExtractorError> {
+    println!("🎯 Match found at position {}: {:?}",
+             state.current_position,
+             state.matched_items);
+
+    // Skip ahead by 2 positions after each match
+    Ok(ExtractorAction::Skip(2))
+});
+
+// Extractor that adds new patterns based on matched values
+let dynamic_extractor = Box::new(|state: &MatchState<i32>| -> Result<ExtractorAction<i32>, ExtractorError> {
+    if let Some(&first_value) = state.matched_items.first() {
+        if first_value > 50 {
+            let new_pattern = Pattern::new(vec![
+                PatternElement::Value {
+                    value: first_value + 10,
+                    settings: Some(ElementSettings::new()),
+                }
+            ]);
+            return Ok(ExtractorAction::AddPattern(
+                format!("dynamic_{}", first_value),
+                new_pattern
+            ));
+        }
+    }
+    Ok(ExtractorAction::Continue)
+});
+```
+
+### Priority-based Matching
+
+```rust
+// Higher priority pattern (lower number = higher priority)
+matcher.add_pattern(
+    "high_priority".to_string(),
+    vec![PatternElement::Value {
+        value: 100,
+        settings: Some(
+            ElementSettings::new()
+                .priority(1)  // High priority
+                .min_repeat(1)
+                .max_repeat(1)
+        ),
+    }]
+);
+
+// Lower priority pattern
+matcher.add_pattern(
+    "low_priority".to_string(),
+    vec![PatternElement::Any {
+        settings: Some(
+            ElementSettings::new()
+                .priority(10)  // Lower priority
+                .min_repeat(1)
+                .max_repeat(1)
+        ),
+    }]
+);
+```
+
+## 🌍 Real-World Examples
+
+### Log Analysis
+
+```rust
+// Detect HTTP error codes
+let error_detector = Box::new(|state: &MatchState<i32>| -> Result<ExtractorAction<i32>, ExtractorError> {
+    if let Some(&code) = state.matched_items.first() {
+        match code {
+            400..=499 => println!("⚠️  Client Error detected: {}", code),
+            500..=599 => println!("🚨 Server Error detected: {}", code),
+            _ => {}
+        }
+    }
+    Ok(ExtractorAction::Continue)
+});
+
+matcher.add_pattern(
+    "http_errors".to_string(),
+    vec![PatternElement::Function {
+        function: Box::new(|&code| (400..=599).contains(&code)),
+        settings: Some(ElementSettings::new().extractor(error_detector)),
+    }]
+);
+```
+
+### Network Traffic Analysis
+
+```rust
+// Detect potential port scanning (rapid consecutive port accesses)
+let scan_detector = Box::new(|state: &MatchState<i32>| -> Result<ExtractorAction<i32>, ExtractorError> {
+    if state.matched_items.len() >= 3 {
+        println!("🔍 Potential port scan detected: {} consecutive port accesses",
+                 state.matched_items.len());
+    }
+    Ok(ExtractorAction::Continue)
+});
+
+matcher.add_pattern(
+    "port_scan".to_string(),
+    vec![PatternElement::Function {
+        function: Box::new(|&port| (1..=65535).contains(&port)),
+        settings: Some(
+            ElementSettings::new()
+                .min_repeat(3)
+                .max_repeat(10)
+                .greedy(true)
+                .extractor(scan_detector)
+        ),
+    }]
+);
+```
+
+## 🚨 Error Handling
+
+The library provides comprehensive error handling:
+
+```rust
+use scrolling_window_pattern_matcher::{MatcherError, ExtractorError};
+
+match matcher.run(&data) {
+    Ok(()) => println!("Matching completed successfully"),
+    Err(MatcherError::ExtractorError(ExtractorError::InvalidPosition(pos))) => {
+        println!("Extractor tried to access invalid position: {}", pos);
+    }
+    Err(MatcherError::ExtractorError(ExtractorError::PatternNotFound(name))) => {
+        println!("Extractor referenced non-existent pattern: {}", name);
+    }
+    Err(MatcherError::ExtractorError(ExtractorError::Message(msg))) => {
+        println!("Extractor error: {}", msg);
+    }
+    Err(e) => println!("Other error: {}", e),
+}
+```
+
+## 📚 API Reference
+
+### Core Types
+
+- `Matcher<T>` - Main matcher struct
+- `PatternElement<T>` - Individual pattern elements (Value, Function, Any, Pattern, Repeat)
+- `ElementSettings<T>` - Configuration for pattern elements
+- `PatternSettings<T>` - Configuration for entire patterns
+- `ExtractorAction<T>` - Actions that extractors can return
+- `MatchState<T>` - Context information provided to extractors
+
+### Matcher Methods
+
+- `new()` - Create a new matcher
+- `with_settings(settings)` - Create matcher with custom settings
+- `add_pattern(name, elements)` - Add a pattern
+- `add_pattern_with_settings(name, pattern)` - Add pattern with custom settings
+- `remove_pattern(name)` - Remove a pattern
+- `run(data)` - Execute matching on data slice
+
+### Settings Builders
+
+- `ElementSettings::new()` - Create element settings builder
+- `PatternSettings::new()` - Create pattern settings builder
+
+Builder methods: `.min_repeat()`, `.max_repeat()`, `.greedy()`, `.priority()`, `.extractor()`
+
+## 🎯 Design Philosophy
+
+This library prioritizes **flexibility and extensibility** through:
+
+- **Extractor-driven architecture** - Extractors provide unlimited customization capabilities
+- **Settings-based configuration** - Clean, discoverable API through builder patterns
+- **Type safety** - Rust's type system prevents common pattern matching errors
+- **Error transparency** - Comprehensive error types with detailed context
+- **Performance awareness** - Efficient algorithms with minimal allocations where possible
+
+## 📝 License
+
+Licensed under either of:
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT License ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.
+
+## 🔄 Breaking Changes from 1.x
+
+- Complete API rewrite with settings-based configuration
+- Callback system replaced with extractor architecture
+- `match_window()` replaced with `run()` method
+- Field-based pattern syntax replaced with settings builders
+- Return type changed from `HashMap<String, Vec<T>>` to `Result<(), MatcherError>`
+- Pattern matching results now handled through extractors rather than return values

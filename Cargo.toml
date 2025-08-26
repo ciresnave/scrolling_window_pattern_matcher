@@ -1,11 +1,16 @@
 [package]
 name = "scrolling_window_pattern_matcher"
 authors = ["Eric Evans <ciresnave@gmail.com>"]
-description = "A library for matching patterns in a scrolling window of data."
+description = "A flexible pattern matching library with extractor-driven architecture for dynamic behavior modification."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ciresnave/scrolling_window_pattern_matcher"
-version = "0.6.0"
-edition = "2024"
+homepage = "https://github.com/ciresnave/scrolling_window_pattern_matcher"
+documentation = "https://docs.rs/scrolling_window_pattern_matcher"
+keywords = ["pattern", "matching", "parsing", "text", "sequence"]
+categories = ["parsing", "text-processing", "algorithms"]
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.70"
 
 [dependencies]
 log = "0.4"
