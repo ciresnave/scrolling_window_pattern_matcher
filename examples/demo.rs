@@ -1,160 +1,183 @@
-use scrolling_window_pattern_matcher::{ElementSettings, Matcher, PatternElement};
+//! Simple demo showcasing the unified pattern matcher API
+//!
+//! This example demonstrates basic usage patterns with the simplified API.
+
+use scrolling_window_pattern_matcher::{ElementSettings, ExtractorAction, Matcher, PatternElement};
+
+#[derive(Debug, Clone)]
+struct DemoContext {
+    name: String,
+    processed_count: usize,
+}
 
 fn main() {
-    println!("=== ScrollingWindowPatternMatcher - Simplified API Demo ===\n");
+    println!("=== ScrollingWindowPatternMatcher - Unified API Demo ===\n");
 
-    // Create a new matcher
-    let mut matcher = Matcher::new();
+    // Example 1: Simple exact value matching
+    println!("1. Simple Exact Value Matching");
+    simple_exact_matching();
 
-    // Example 1: Simple value matching
-    println!("1. Simple Value Matching");
-    matcher.add_pattern(
-        "find_42".to_string(),
-        vec![PatternElement::Value {
-            value: 42,
-            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-        }],
-    );
+    // Example 2: Predicate-based matching
+    println!("2. Predicate-based Matching");
+    predicate_matching();
 
-    let data1 = vec![1, 42, 3, 42, 5];
-    let results1 = matcher.run(&data1);
-    println!("   Data: {:?}", data1);
-    println!("   Results: {:?}\n", results1);
+    // Example 3: Range matching
+    println!("3. Range Matching");
+    range_matching();
 
-    // Example 2: Function-based matching
-    println!("2. Function-based Matching (even numbers)");
-    let mut matcher2 = Matcher::new();
-    matcher2.add_pattern(
-        "even_numbers".to_string(),
-        vec![PatternElement::Function {
-            function: Box::new(|x: &i32| x % 2 == 0),
-            settings: Some(
-                ElementSettings::new()
-                    .min_repeat(1)
-                    .max_repeat(3)
-                    .greedy(true),
-            ),
-        }],
-    );
+    // Example 4: Sequence patterns
+    println!("4. Sequence Patterns");
+    sequence_patterns();
 
-    let data2 = vec![1, 2, 4, 6, 7];
-    let results2 = matcher2.run(&data2);
-    println!("   Data: {:?}", data2);
-    println!("   Results: {:?}\n", results2);
+    // Example 5: Optional elements
+    println!("5. Optional Elements");
+    optional_elements();
 
-    // Example 3: Complex pattern with multiple elements
-    println!("3. Complex Pattern (value 1, any item, value 3)");
-    let mut matcher3 = Matcher::new();
-    matcher3.add_pattern(
-        "one_any_three".to_string(),
-        vec![
-            PatternElement::Value {
-                value: 1,
-                settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-            },
-            PatternElement::Any {
-                settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-            },
-            PatternElement::Value {
-                value: 3,
-                settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-            },
-        ],
-    );
+    // Example 6: Extractors
+    println!("6. Data Extractors");
+    data_extractors();
 
-    let data3 = vec![1, 2, 3, 4, 1, 5, 3];
-    let results3 = matcher3.run(&data3);
-    println!("   Data: {:?}", data3);
-    println!("   Results: {:?}\n", results3);
-
-    // Example 4: Quantifier usage (repeating patterns)
-    println!("4. Quantifier Usage (2-4 consecutive 2s)");
-    let mut matcher4 = Matcher::new();
-    matcher4.add_pattern(
-        "repeat_twos".to_string(),
-        vec![PatternElement::Value {
-            value: 2,
-            settings: Some(
-                ElementSettings::new()
-                    .min_repeat(2)
-                    .max_repeat(4)
-                    .greedy(true),
-            ),
-        }],
-    );
-
-    let data4 = vec![1, 2, 2, 2, 3];
-    let results4 = matcher4.run(&data4);
-    println!("   Data: {:?}", data4);
-    println!("   Results: {:?}\n", results4);
-
-    // Example 5: Basic usage (callbacks removed as not available in current API)
-    println!("5. Basic Pattern Matching");
-    let mut matcher5 = Matcher::new();
-    matcher5.add_pattern(
-        "find_99".to_string(),
-        vec![PatternElement::Value {
-            value: 99,
-            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-        }],
-    );
-
-    let data5 = vec![1, 99, 3];
-    let results5 = matcher5.run(&data5);
-    println!("   Data: {:?}", data5);
-    println!("   Results: {:?}\n", results5);
-
-    // Example 6: Multiple patterns
-    println!("6. Multiple Patterns");
-    let mut matcher6 = Matcher::new();
-
-    // Add first pattern
-    matcher6.add_pattern(
-        "find_large".to_string(),
-        vec![PatternElement::Function {
-            function: Box::new(|x: &i32| *x > 10),
-            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-        }],
-    );
-
-    // Add second pattern
-    matcher6.add_pattern(
-        "find_small".to_string(),
-        vec![PatternElement::Function {
-            function: Box::new(|x: &i32| *x < 5),
-            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-        }],
-    );
-
-    let data6 = vec![5, 15, 2, 20];
-    let results6 = matcher6.run(&data6);
-    println!("   Data: {:?}", data6);
-    println!("   Results: {:?}\n", results6);
-
-    // Example 7: Any element matching
-    println!("7. Any Element Matching");
-    let mut matcher7 = Matcher::new();
-    matcher7.add_pattern(
-        "any_sequence".to_string(),
-        vec![
-            PatternElement::Value {
-                value: 1,
-                settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-            },
-            PatternElement::Any {
-                settings: Some(ElementSettings::new().min_repeat(2).max_repeat(3)),
-            },
-            PatternElement::Value {
-                value: 5,
-                settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-            },
-        ],
-    );
-
-    let data7 = vec![1, 2, 3, 4, 5];
-    let results7 = matcher7.run(&data7);
-    println!("   Data: {:?}", data7);
-    println!("   Results: {:?}\n", results7);
+    // Example 7: Processing multiple items
+    println!("7. Processing Item Streams");
+    stream_processing();
 
     println!("=== Demo Complete ===");
+}
+
+fn simple_exact_matching() {
+    let mut matcher = Matcher::<i32, DemoContext>::new(10);
+    matcher.add_pattern(PatternElement::exact(42));
+
+    let test_items = vec![1, 42, 3, 42, 5];
+    println!("   Testing items: {:?}", test_items);
+
+    for item in test_items {
+        if let Some(result) = matcher.process_item(item).unwrap() {
+            println!("   ✓ Found match: {}", result);
+        }
+    }
+    println!();
+}
+
+fn predicate_matching() {
+    let mut matcher = Matcher::<i32, DemoContext>::new(10);
+    matcher.add_pattern(PatternElement::predicate(|x| *x % 2 == 0));
+
+    let test_items = vec![1, 2, 3, 4, 5, 6];
+    println!("   Testing items: {:?}", test_items);
+    println!("   Looking for even numbers:");
+
+    for item in test_items {
+        if let Some(result) = matcher.process_item(item).unwrap() {
+            println!("   ✓ Found even number: {}", result);
+        }
+    }
+    println!();
+}
+
+fn range_matching() {
+    let mut matcher = Matcher::<i32, DemoContext>::new(10);
+    matcher.add_pattern(PatternElement::range(10, 20));
+
+    let test_items = vec![5, 15, 25, 12, 8];
+    println!("   Testing items: {:?}", test_items);
+    println!("   Looking for numbers in range [10, 20]:");
+
+    for item in test_items {
+        if let Some(result) = matcher.process_item(item).unwrap() {
+            println!("   ✓ Found number in range: {}", result);
+        }
+    }
+    println!();
+}
+
+fn sequence_patterns() {
+    let mut matcher = Matcher::<i32, DemoContext>::new(10);
+
+    // Pattern: 1 followed by 2 followed by 3
+    matcher.add_pattern(PatternElement::exact(1));
+    matcher.add_pattern(PatternElement::exact(2));
+    matcher.add_pattern(PatternElement::exact(3));
+
+    let test_items = vec![1, 2, 3, 4, 1, 2, 3, 5];
+    println!("   Testing items: {:?}", test_items);
+    println!("   Looking for sequence [1, 2, 3]:");
+
+    for item in test_items {
+        if let Some(result) = matcher.process_item(item).unwrap() {
+            println!("   ✓ Found complete sequence, final element: {}", result);
+        }
+    }
+    println!();
+}
+
+fn optional_elements() {
+    let mut matcher = Matcher::<i32, DemoContext>::new(10);
+
+    // Pattern: 1, optionally 2, then 3
+    matcher.add_pattern(PatternElement::exact(1));
+
+    let mut settings = ElementSettings::default();
+    settings.optional = true;
+    matcher.add_pattern(PatternElement::exact_with_settings(2, settings));
+
+    matcher.add_pattern(PatternElement::exact(3));
+
+    println!("   Pattern: 1, (optional 2), 3");
+
+    // Test with optional element present
+    let test1 = vec![1, 2, 3];
+    println!("   Testing {:?} (optional present):", test1);
+    for item in test1 {
+        if let Some(result) = matcher.process_item(item).unwrap() {
+            println!("   ✓ Match found: {}", result);
+        }
+    }
+
+    matcher.reset();
+
+    // Test with optional element missing
+    let test2 = vec![1, 3];
+    println!("   Testing {:?} (optional missing):", test2);
+    for item in test2 {
+        if let Some(result) = matcher.process_item(item).unwrap() {
+            println!("   ✓ Match found: {}", result);
+        }
+    }
+    println!();
+}
+
+fn data_extractors() {
+    let mut matcher = Matcher::<i32, DemoContext>::new(10);
+
+    // Register an extractor that doubles the value
+    matcher.register_extractor(1, |state| {
+        Ok(ExtractorAction::Extract(state.current_item * 2))
+    });
+
+    let mut settings = ElementSettings::default();
+    settings.extractor_id = Some(1);
+    matcher.add_pattern(PatternElement::exact_with_settings(10, settings));
+
+    println!("   Testing extractor that doubles the value:");
+    if let Some(result) = matcher.process_item(10).unwrap() {
+        println!("   ✓ Input: 10, Extracted: {}", result);
+    }
+    println!();
+}
+
+fn stream_processing() {
+    let mut matcher = Matcher::<i32, DemoContext>::new(10);
+
+    // Pattern: any even number followed by any odd number
+    matcher.add_pattern(PatternElement::predicate(|x| *x % 2 == 0));
+    matcher.add_pattern(PatternElement::predicate(|x| *x % 2 == 1));
+
+    let stream = vec![1, 2, 3, 4, 5, 6, 7, 8, 9];
+    println!("   Processing stream: {:?}", stream);
+    println!("   Looking for pattern: even followed by odd");
+
+    let results = matcher.process_items(stream).unwrap();
+    println!("   ✓ Found {} matches: {:?}", results.len(), results);
+    println!();
 }

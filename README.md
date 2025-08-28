@@ -1,431 +1,404 @@
 # ScrollingWindowPatternMatcher
 
-A flexible pattern matching library for Rust with an advanced extractor system for dynamic behavior modification. This library allows you to create complex patterns that match against sequences of data, with powerful extractor functions that can modify matching behavior at runtime.
+A high-performance pattern matching library for Rust that processes streaming data with configurable window sizes and custom data extractors. This library allows you to create complex patterns that match against sequences of data, with powerful extractor functions that can modify matching behavior at runtime.
 
-## 🚨 Major Version 2.0 Rewrite
+## 🚨 Major Version 2.0 Simplification
 
-**This is a complete rewrite from version 1.x with breaking API changes.** The previous field-based pattern syntax has been replaced with a settings-based approach, and the callback system has been replaced with a more powerful extractor architecture.
-
-### Migration from 1.x
-
-The API has fundamentally changed. Please see the examples and documentation below for the new approach.
+**This is a major simplification from previous versions with breaking API changes.** The dual architecture has been unified into a single `Matcher` that supports both simple pattern matching and advanced stateful operations with context.
 
 ## ✨ Features
 
-- **Extractor-driven architecture** - Dynamic modification of matching behavior through extractor functions
-- **Settings-based configuration** - Clean builder pattern for pattern element configuration
-- **Rich pattern elements** - Values, functions, pattern references, wildcards, and nested repeats
-- **Advanced extractor actions** - Continue, Skip, Jump, pattern manipulation, and flow control
-- **Comprehensive error handling** - Detailed error types with proper error propagation
-- **Zero-copy when possible** - Efficient matching with minimal allocations
-- **Priority-based matching** - Control pattern matching order with priority settings
+- **Unified Architecture** - Single `Matcher` type that handles all pattern matching scenarios
+- **Context Support** - Optional context for stateful operations and data capture
+- **Function-based Patterns** - Custom matching logic with closures and predicates  
+- **Stateful Extraction** - Access and modify context during pattern matching
+- **Settings-based Configuration** - Clean configuration for element behavior
+- **Rich Pattern Elements** - Exact matches, predicates, and range matching
+- **Flexible Extraction** - Extract, continue, or restart pattern matching flow
+- **Comprehensive Error Handling** - Detailed error types with proper error propagation
+- **Memory Safe** - Zero-copy operations where possible with Rust's ownership guarantees
 
 ## 🚀 Quick Start
 
+### Basic Pattern Matching
+
 ```rust
-use scrolling_window_pattern_matcher::{ElementSettings, Matcher, PatternElement};
+use scrolling_window_pattern_matcher::{Matcher, PatternElement};
+
+// Create a matcher with a window size
+let mut matcher = Matcher::<i32, ()>::new(10);
+
+// Add patterns to find sequence 1, 2, 3
+matcher.add_pattern(PatternElement::exact(1));
+matcher.add_pattern(PatternElement::exact(2));
+matcher.add_pattern(PatternElement::exact(3));
+
+// Process data items
+assert_eq!(matcher.process_item(1).unwrap(), None);
+assert_eq!(matcher.process_item(2).unwrap(), None);
+assert_eq!(matcher.process_item(3).unwrap(), Some(3)); // Pattern complete!
+```
+
+### Function-based Pattern Matching
+
+```rust
+use scrolling_window_pattern_matcher::{Matcher, PatternElement};
+
+// Create a matcher with window size 10
+let mut matcher = Matcher::<i32, ()>::new(10);
+
+// Add patterns to find even numbers followed by odd numbers
+matcher.add_pattern(PatternElement::predicate(|x| *x % 2 == 0));
+matcher.add_pattern(PatternElement::predicate(|x| *x % 2 == 1));
+
+// Process data
+assert_eq!(matcher.process_item(2).unwrap(), None);  // Even number matches first pattern
+assert_eq!(matcher.process_item(3).unwrap(), Some(3)); // Odd number completes the pattern
+```
+
+### Range-based Pattern Matching
+
+```rust
+use scrolling_window_pattern_matcher::{Matcher, PatternElement};
 
 // Create a matcher
-let mut matcher = Matcher::new();
+let mut matcher = Matcher::<i32, ()>::new(10);
 
-// Add a pattern to find the value 42
-matcher.add_pattern(
-    "find_42".to_string(),
-    vec![PatternElement::Value {
-        value: 42,
-        settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-    }]
-);
+// Add patterns to find values in ranges
+matcher.add_pattern(PatternElement::range(1, 5));    // 1 <= x <= 5
+matcher.add_pattern(PatternElement::range(10, 15));  // 10 <= x <= 15
 
-// Match against data
-let data = vec![1, 42, 3, 42, 5];
-let result = matcher.run(&data);
-assert!(result.is_ok());
+// Process data
+assert_eq!(matcher.process_item(3).unwrap(), None);   // First range matches
+assert_eq!(matcher.process_item(12).unwrap(), Some(12)); // Second range completes pattern
+```
+
+### Stateful Pattern Matching with Context
+
+```rust
+use scrolling_window_pattern_matcher::{
+    Matcher, PatternElement, ElementSettings, ExtractorAction, ExtractorError
+};
+
+// Define a context to capture matched values
+#[derive(Debug, Clone)]
+struct MyContext {
+    captured_values: Vec<i32>,
+}
+
+// Create a matcher with context
+let mut matcher = Matcher::<i32, MyContext>::new(10);
+
+// Set up context
+let context = MyContext {
+    captured_values: Vec::new(),
+};
+matcher.set_context(context);
+
+// Register an extractor that captures values
+matcher.register_extractor(1, |state| {
+    if state.current_item > 10 {
+        Ok(ExtractorAction::Extract(state.current_item * 2))
+    } else {
+        Ok(ExtractorAction::Continue)
+    }
+});
+
+// Create a pattern with an extractor
+let mut settings = ElementSettings::default();
+settings.extractor_id = Some(1);
+matcher.add_pattern(PatternElement::exact_with_settings(15, settings));
+
+// Process an item - the extractor will double it
+assert_eq!(matcher.process_item(15).unwrap(), Some(30));
 ```
 
 ## 🏗️ Pattern Elements
 
-### Value
+The library supports multiple types of pattern elements:
 
-Matches a specific value:
+### Exact Match Elements
 
 ```rust
-PatternElement::Value {
-    value: 42,
-    settings: Some(
-        ElementSettings::new()
-            .min_repeat(1)     // Must match at least this many times
-            .max_repeat(3)     // Match at most this many times
-            .greedy(true)      // Match as many as possible (true) or as few as possible (false)
-            .priority(10)      // Lower numbers = higher priority
-    ),
-}
+use scrolling_window_pattern_matcher::{PatternElement, ElementSettings};
+
+// Simple exact match
+let element = PatternElement::exact(42);
+
+// Exact match with settings and extractor
+let mut settings = ElementSettings::default();
+settings.extractor_id = Some(1);
+settings.optional = true;
+let element = PatternElement::exact_with_settings(42, settings);
 ```
 
-### Function
-
-Matches using custom logic:
+### Predicate Elements
 
 ```rust
-PatternElement::Function {
-    function: Box::new(|x: &i32| x % 2 == 0),  // Custom predicate function
-    settings: Some(
-        ElementSettings::new()
-            .min_repeat(1)
-            .max_repeat(5)
-            .greedy(true)
-    ),
-}
-```
+use scrolling_window_pattern_matcher::PatternElement;
 
-### Any
+// Simple predicate
+let element = PatternElement::predicate(|x: &i32| *x > 0);
 
-Wildcard matching:
-
-```rust
-PatternElement::Any {
-    settings: Some(
-        ElementSettings::new()
-            .min_repeat(1)     // Match any 1-3 consecutive items
-            .max_repeat(3)
-            .greedy(false)
-    ),
-}
-```
-
-### Pattern Reference
-
-References another named pattern:
-
-```rust
-PatternElement::Pattern {
-    pattern: "other_pattern_name".to_string(),
-    settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-}
-```
-
-### Repeat
-
-Repeats a nested pattern element:
-
-```rust
-PatternElement::Repeat {
-    element: Box::new(PatternElement::Value {
-        value: 5,
-        settings: None,
-    }),
-    settings: Some(
-        ElementSettings::new()
-            .min_repeat(2)
-            .max_repeat(4)
-            .greedy(true)
-    ),
-}
-```
-
-## ⚡ Extractor System
-
-The extractor system is the core feature that allows dynamic modification of matching behavior:
-
-### Basic Extractor
-
-```rust
-use scrolling_window_pattern_matcher::{ExtractorAction, MatchState};
-
-let extractor = Box::new(|state: &MatchState<i32>| {
-    println!("Matched at position {}: {:?}",
-             state.current_position,
-             state.matched_items);
-    Ok(ExtractorAction::Continue)
-});
-
-let pattern = vec![PatternElement::Value {
-    value: 42,
-    settings: Some(ElementSettings::new().extractor(extractor)),
-}];
-```
-
-### Extractor Actions
-
-#### Continue
-
-Continue normal matching:
-
-```rust
-Ok(ExtractorAction::Continue)
-```
-
-#### Skip
-
-Skip ahead by N positions:
-
-```rust
-Ok(ExtractorAction::Skip(3))  // Skip 3 positions ahead
-```
-
-#### Jump
-
-Jump relative to current position:
-
-```rust
-Ok(ExtractorAction::Jump(-2))  // Jump back 2 positions
-Ok(ExtractorAction::Jump(5))   // Jump forward 5 positions
-```
-
-#### Pattern Manipulation
-
-Add or remove patterns dynamically:
-
-```rust
-// Add a new pattern
-Ok(ExtractorAction::AddPattern(
-    "new_pattern".to_string(),
-    Pattern::new(vec![/* pattern elements */])
-))
-
-// Remove a pattern
-Ok(ExtractorAction::RemovePattern("old_pattern".to_string()))
-```
-
-#### Flow Control
-
-```rust
-Ok(ExtractorAction::StopMatching)           // Stop all matching
-Ok(ExtractorAction::DiscardPartialMatch)    // Discard current match
-Ok(ExtractorAction::RestartFrom(0))         // Restart from specific position
-```
-
-### Match State Information
-
-Extractors receive rich context information:
-
-```rust
-let extractor = Box::new(|state: &MatchState<i32>| {
-    println!("Current position: {}", state.current_position);
-    println!("Matched items: {:?}", state.matched_items);
-    println!("Pattern name: {}", state.pattern_name);
-    println!("Element index: {}", state.element_index);
-    println!("Input length: {}", state.input_length);
-    Ok(ExtractorAction::Continue)
-});
-```
-
-## 🔧 Complex Examples
-
-### Multi-element Pattern
-
-```rust
-// Pattern: value 1, then any item, then value 3
-matcher.add_pattern(
-    "one_any_three".to_string(),
-    vec![
-        PatternElement::Value {
-            value: 1,
-            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-        },
-        PatternElement::Any {
-            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-        },
-        PatternElement::Value {
-            value: 3,
-            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-        },
-    ]
+// Predicate with settings
+let mut settings = ElementSettings::default();
+settings.max_retries = 3;
+let element = PatternElement::predicate_with_settings(
+    |x: &i32| x % 2 == 0, 
+    settings
 );
 ```
 
-### Advanced Extractor Usage
+### Range Elements
 
 ```rust
-use scrolling_window_pattern_matcher::{ExtractorAction, ExtractorError, MatchState};
+use scrolling_window_pattern_matcher::PatternElement;
 
-// Extractor that logs matches and skips ahead
-let logging_extractor = Box::new(|state: &MatchState<i32>| -> Result<ExtractorAction<i32>, ExtractorError> {
-    println!("🎯 Match found at position {}: {:?}",
-             state.current_position,
-             state.matched_items);
+// Simple range (inclusive)
+let element = PatternElement::range(1, 10);
 
-    // Skip ahead by 2 positions after each match
-    Ok(ExtractorAction::Skip(2))
-});
+// Range with settings
+let mut settings = ElementSettings::default();
+settings.timeout_ms = Some(1000);
+let element = PatternElement::range_with_settings(1, 10, settings);
+```
 
-// Extractor that adds new patterns based on matched values
-let dynamic_extractor = Box::new(|state: &MatchState<i32>| -> Result<ExtractorAction<i32>, ExtractorError> {
-    if let Some(&first_value) = state.matched_items.first() {
-        if first_value > 50 {
-            let new_pattern = Pattern::new(vec![
-                PatternElement::Value {
-                    value: first_value + 10,
-                    settings: Some(ElementSettings::new()),
-                }
-            ]);
-            return Ok(ExtractorAction::AddPattern(
-                format!("dynamic_{}", first_value),
-                new_pattern
-            ));
-        }
+## ⚙️ Element Settings
+
+Configure pattern element behavior with `ElementSettings`:
+
+```rust
+use scrolling_window_pattern_matcher::ElementSettings;
+
+let mut settings = ElementSettings::default();
+settings.max_retries = 3;           // Retry failed matches
+settings.optional = true;           // Element is optional in pattern
+settings.timeout_ms = Some(1000);   // Timeout for this element
+settings.extractor_id = Some(1);    // Associated extractor ID
+
+// Context can be added too
+settings.context = Some(my_context);
+```
+
+## 🔍 Extractors
+
+Extractors allow you to modify the matching flow and extract custom data:
+
+### ExtractorAction Types
+
+```rust
+use scrolling_window_pattern_matcher::ExtractorAction;
+
+// Continue normal pattern matching
+ExtractorAction::Continue
+
+// Extract data and complete the pattern
+ExtractorAction::Extract(data)
+
+// Restart pattern matching from the beginning
+ExtractorAction::Restart
+```
+
+### Registering Extractors
+
+```rust
+// Register an extractor function with an ID
+matcher.register_extractor(1, |state| {
+    if state.current_item > 100 {
+        Ok(ExtractorAction::Extract(state.current_item))
+    } else {
+        Ok(ExtractorAction::Continue)
     }
-    Ok(ExtractorAction::Continue)
-});
-```
-
-### Priority-based Matching
-
-```rust
-// Higher priority pattern (lower number = higher priority)
-matcher.add_pattern(
-    "high_priority".to_string(),
-    vec![PatternElement::Value {
-        value: 100,
-        settings: Some(
-            ElementSettings::new()
-                .priority(1)  // High priority
-                .min_repeat(1)
-                .max_repeat(1)
-        ),
-    }]
-);
-
-// Lower priority pattern
-matcher.add_pattern(
-    "low_priority".to_string(),
-    vec![PatternElement::Any {
-        settings: Some(
-            ElementSettings::new()
-                .priority(10)  // Lower priority
-                .min_repeat(1)
-                .max_repeat(1)
-        ),
-    }]
-);
-```
-
-## 🌍 Real-World Examples
-
-### Log Analysis
-
-```rust
-// Detect HTTP error codes
-let error_detector = Box::new(|state: &MatchState<i32>| -> Result<ExtractorAction<i32>, ExtractorError> {
-    if let Some(&code) = state.matched_items.first() {
-        match code {
-            400..=499 => println!("⚠️  Client Error detected: {}", code),
-            500..=599 => println!("🚨 Server Error detected: {}", code),
-            _ => {}
-        }
-    }
-    Ok(ExtractorAction::Continue)
 });
 
-matcher.add_pattern(
-    "http_errors".to_string(),
-    vec![PatternElement::Function {
-        function: Box::new(|&code| (400..=599).contains(&code)),
-        settings: Some(ElementSettings::new().extractor(error_detector)),
-    }]
-);
+// The MatchState provides information about the current match
+// - state.current_item: The item being processed
+// - state.position: Position in the current pattern
+// - state.total_processed: Total items processed so far
 ```
 
-### Network Traffic Analysis
+## 📊 Matcher API
+
+### Core Methods
 
 ```rust
-// Detect potential port scanning (rapid consecutive port accesses)
-let scan_detector = Box::new(|state: &MatchState<i32>| -> Result<ExtractorAction<i32>, ExtractorError> {
-    if state.matched_items.len() >= 3 {
-        println!("🔍 Potential port scan detected: {} consecutive port accesses",
-                 state.matched_items.len());
-    }
-    Ok(ExtractorAction::Continue)
-});
+// Create a new matcher
+let mut matcher = Matcher::<i32, MyContext>::new(window_size);
 
-matcher.add_pattern(
-    "port_scan".to_string(),
-    vec![PatternElement::Function {
-        function: Box::new(|&port| (1..=65535).contains(&port)),
-        settings: Some(
-            ElementSettings::new()
-                .min_repeat(3)
-                .max_repeat(10)
-                .greedy(true)
-                .extractor(scan_detector)
-        ),
-    }]
-);
+// Add pattern elements
+matcher.add_pattern(PatternElement::exact(42));
+
+// Process single items
+let result = matcher.process_item(item)?;
+
+// Process multiple items
+let results = matcher.process_items(vec![1, 2, 3])?;
+
+// Reset matcher state
+matcher.reset();
+
+// Register extractors
+matcher.register_extractor(id, extractor_fn);
+
+// Context management
+matcher.set_context(context);
+let context_ref = matcher.context();
 ```
 
-## 🚨 Error Handling
+### State Inspection
+
+```rust
+// Check current matching state
+let position = matcher.current_position();
+let total = matcher.total_processed();
+let count = matcher.pattern_count();
+let is_matching = matcher.is_matching();
+
+// Window size management
+let size = matcher.window_size();
+matcher.set_window_size(new_size);
+```
+
+## 🧪 Testing
+
+Run the test suite:
+
+```bash
+cargo test
+```
+
+Run tests with output:
+
+```bash
+cargo test -- --nocapture
+```
+
+Run specific tests:
+
+```bash
+cargo test test_exact_match
+```
+
+## 📝 Examples
+
+See the built-in tests for comprehensive examples:
+
+- `tests::test_exact_match` - Basic exact value matching
+- `tests::test_predicate_match` - Function-based pattern matching  
+- `tests::test_range_match` - Range-based pattern matching
+- `tests::test_extractor` - Custom data extraction
+- `tests::test_context` - Context management
+- `tests::test_reset` - State reset functionality
+
+## 🚦 Error Handling
 
 The library provides comprehensive error handling:
 
 ```rust
 use scrolling_window_pattern_matcher::{MatcherError, ExtractorError};
 
-match matcher.run(&data) {
-    Ok(()) => println!("Matching completed successfully"),
-    Err(MatcherError::ExtractorError(ExtractorError::InvalidPosition(pos))) => {
-        println!("Extractor tried to access invalid position: {}", pos);
-    }
-    Err(MatcherError::ExtractorError(ExtractorError::PatternNotFound(name))) => {
-        println!("Extractor referenced non-existent pattern: {}", name);
-    }
-    Err(MatcherError::ExtractorError(ExtractorError::Message(msg))) => {
-        println!("Extractor error: {}", msg);
-    }
-    Err(e) => println!("Other error: {}", e),
+match matcher.process_item(item) {
+    Ok(Some(extracted)) => println!("Extracted: {:?}", extracted),
+    Ok(None) => println!("No match yet"),
+    Err(MatcherError::NoPatterns) => println!("No patterns configured"),
+    Err(MatcherError::InvalidPattern(msg)) => println!("Invalid pattern: {}", msg),
+    Err(MatcherError::ExtractorFailed(err)) => println!("Extractor failed: {}", err),
 }
 ```
 
+## 🔧 Advanced Usage
+
+### Custom Context Types
+
+```rust
+#[derive(Debug, Clone)]
+struct CustomContext {
+    captured_data: Vec<String>,
+    counters: HashMap<String, usize>,
+    config: AppConfig,
+}
+
+let mut matcher = Matcher::<String, CustomContext>::new(50);
+```
+
+### Complex Extractors
+
+```rust
+matcher.register_extractor(1, |state| {
+    match state.current_item {
+        item if item > 100 => {
+            // Extract large values
+            Ok(ExtractorAction::Extract(item * 2))
+        }
+        item if item < 0 => {
+            // Restart on negative values
+            Ok(ExtractorAction::Restart)
+        }
+        _ => {
+            // Continue normal processing
+            Ok(ExtractorAction::Continue)
+        }
+    }
+});
+```
+
+### Pattern Composition
+
+```rust
+// Build complex patterns step by step
+matcher.add_pattern(PatternElement::exact(1));
+matcher.add_pattern(PatternElement::predicate(|x| *x % 2 == 0));
+matcher.add_pattern(PatternElement::range(10, 20));
+
+// Or with settings
+let mut settings = ElementSettings::default();
+settings.optional = true;
+matcher.add_pattern(PatternElement::exact_with_settings(42, settings));
+```
+
+## 📈 Performance
+
+The library is designed for high-performance streaming data processing:
+
+- **Zero-copy operations** where possible
+- **Minimal allocations** during pattern matching
+- **Efficient state management** with small memory footprint
+- **Configurable window sizes** to control memory usage
+- **Async-friendly** design (no blocking operations)
+
 ## 📚 API Reference
 
-### Core Types
+### Types
 
-- `Matcher<T>` - Main matcher struct
-- `PatternElement<T>` - Individual pattern elements (Value, Function, Any, Pattern, Repeat)
-- `ElementSettings<T>` - Configuration for pattern elements
-- `PatternSettings<T>` - Configuration for entire patterns
+- `Matcher<T, Context>` - Main pattern matcher with optional context
+- `PatternElement<T, Context>` - Individual pattern elements  
+- `ElementSettings<Context>` - Configuration for pattern elements
+- `MatchState<T>` - Current state information for extractors
 - `ExtractorAction<T>` - Actions that extractors can return
-- `MatchState<T>` - Context information provided to extractors
+- `MatcherError` - Error types for matcher operations
+- `ExtractorError` - Error types for extractor operations
 
-### Matcher Methods
+### Key Traits
 
-- `new()` - Create a new matcher
-- `with_settings(settings)` - Create matcher with custom settings
-- `add_pattern(name, elements)` - Add a pattern
-- `add_pattern_with_settings(name, pattern)` - Add pattern with custom settings
-- `remove_pattern(name)` - Remove a pattern
-- `run(data)` - Execute matching on data slice
+All generic types must implement:
+- `T: Clone + PartialEq + fmt::Debug + PartialOrd` (for pattern matching)
+- `Context: Clone + fmt::Debug` (for context operations)
 
-### Settings Builders
+## 🤝 Contributing
 
-- `ElementSettings::new()` - Create element settings builder
-- `PatternSettings::new()` - Create pattern settings builder
+Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
 
-Builder methods: `.min_repeat()`, `.max_repeat()`, `.greedy()`, `.priority()`, `.extractor()`
+## 📄 License
 
-## 🎯 Design Philosophy
+This project is licensed under either of:
 
-This library prioritizes **flexibility and extensibility** through:
-
-- **Extractor-driven architecture** - Extractors provide unlimited customization capabilities
-- **Settings-based configuration** - Clean, discoverable API through builder patterns
-- **Type safety** - Rust's type system prevents common pattern matching errors
-- **Error transparency** - Comprehensive error types with detailed context
-- **Performance awareness** - Efficient algorithms with minimal allocations where possible
-
-## 📝 License
-
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+- MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
 at your option.
 
-## 🔄 Breaking Changes from 1.x
+## 🔗 Links
 
-- Complete API rewrite with settings-based configuration
-- Callback system replaced with extractor architecture
-- `match_window()` replaced with `run()` method
-- Field-based pattern syntax replaced with settings builders
-- Return type changed from `HashMap<String, Vec<T>>` to `Result<(), MatcherError>`
-- Pattern matching results now handled through extractors rather than return values
+- [Documentation](https://docs.rs/scrolling_window_pattern_matcher)
+- [Crates.io](https://crates.io/crates/scrolling_window_pattern_matcher)
+- [Repository](https://github.com/user/scrolling_window_pattern_matcher)

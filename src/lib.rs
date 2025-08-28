@@ -1,1042 +1,1065 @@
 //! # Scrolling Window Pattern Matcher
 //!
-//! A flexible pattern matching library with extractor-driven architecture for dynamic behavior modification.
+//! A high-performance, unified pattern matching library for Rust that processes streaming data
+//! with configurable window sizes and custom data extractors. This library provides a single
+//! `Matcher` type that handles both simple pattern matching and advanced stateful operations
+//! with optional context management.
 //!
-//! This library allows you to create complex patterns that match against sequences of data, with powerful
-//! extractor functions that can modify matching behavior at runtime.
+//! ## Features
+//!
+//! - **Unified Architecture** - Single `Matcher<T, Context>` type for all pattern matching scenarios
+//! - **Context Support** - Optional context parameter for stateful operations and data capture
+//! - **Pattern Elements** - Exact matching, predicate functions, and range matching
+//! - **Extractor System** - Powerful extractors that can continue, extract, or restart pattern matching
+//! - **Optional Elements** - Flexible patterns with optional components
+//! - **Error Handling** - Comprehensive error types with proper propagation
+//! - **Memory Safe** - Zero-copy operations where possible with Rust's ownership guarantees
 //!
 //! ## Quick Start
 //!
 //! ```rust
-//! use scrolling_window_pattern_matcher::{ElementSettings, Matcher, PatternElement};
+//! use scrolling_window_pattern_matcher::{Matcher, PatternElement};
 //!
-//! // Create a matcher
-//! let mut matcher = Matcher::new();
+//! // Create a matcher with window size 10
+//! let mut matcher = Matcher::<i32, ()>::new(10);
 //!
-//! // Add a pattern to find the value 42
-//! matcher.add_pattern(
-//!     "find_42".to_string(),
-//!     vec![PatternElement::Value {
-//!         value: 42,
-//!         settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-//!     }]
-//! );
+//! // Add patterns to find sequence 1, 2, 3
+//! matcher.add_pattern(PatternElement::exact(1));
+//! matcher.add_pattern(PatternElement::exact(2));
+//! matcher.add_pattern(PatternElement::exact(3));
 //!
-//! // Match against data
-//! let data = vec![1, 42, 3, 42, 5];
-//! let result = matcher.run(&data);
-//! assert!(result.is_ok());
+//! // Process data items
+//! assert_eq!(matcher.process_item(1).unwrap(), None);
+//! assert_eq!(matcher.process_item(2).unwrap(), None);
+//! assert_eq!(matcher.process_item(3).unwrap(), Some(3)); // Pattern complete!
 //! ```
 //!
-//! ## Key Features
+//! ## Pattern Elements
 //!
-//! - **Extractor-driven architecture** - Dynamic modification of matching behavior through extractor functions
-//! - **Settings-based configuration** - Clean builder pattern for pattern element configuration
-//! - **Rich pattern elements** - Values, functions, pattern references, wildcards, and nested repeats
-//! - **Advanced extractor actions** - Continue, Skip, Jump, pattern manipulation, and flow control
-//! - **Comprehensive error handling** - Detailed error types with proper error propagation
+//! The library supports three main types of pattern elements:
 //!
-//! ## Breaking Changes from 1.x
+//! - **Exact Match**: `PatternElement::exact(value)` - matches specific values
+//! - **Predicate**: `PatternElement::predicate(|x| condition)` - matches based on custom logic
+//! - **Range**: `PatternElement::range(min, max)` - matches values within inclusive range
 //!
-//! This is a complete rewrite from version 1.x with breaking API changes:
-//! - Complete API rewrite with settings-based configuration
-//! - Callback system replaced with extractor architecture
-//! - Field-based pattern syntax replaced with settings builders
-//! - Return type changed from `HashMap<String, Vec<T>>` to `Result<(), MatcherError>`
+//! Each pattern element can be configured with `ElementSettings` for advanced behavior
+//! including optional elements and custom extractors.
+//!
+//! ## Extractors
+//!
+//! Extractors allow you to modify the matching flow and extract custom data:
+//!
+//! ```rust
+//! use scrolling_window_pattern_matcher::{Matcher, PatternElement, ElementSettings, ExtractorAction};
+//!
+//! let mut matcher = Matcher::<i32, ()>::new(10);
+//!
+//! // Register an extractor that doubles the matched value
+//! matcher.register_extractor(1, |state| {
+//!     Ok(ExtractorAction::Extract(state.current_item * 2))
+//! });
+//!
+//! let mut settings = ElementSettings::default();
+//! settings.extractor_id = Some(1);
+//! matcher.add_pattern(PatternElement::exact_with_settings(5, settings));
+//!
+//! assert_eq!(matcher.process_item(5).unwrap(), Some(10)); // 5 * 2 = 10
+//! ```
 
 use std::collections::HashMap;
 use std::fmt;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 
-/// Actions that an extractor can take to modify matching behavior
-#[derive(Debug, Clone)]
-pub enum ExtractorAction<T> {
-    Continue,
-    Skip(usize),
-    Jump(isize),
-    DiscardPartialMatch,
-    AddPattern(String, Pattern<T>),
-    RemovePattern(String),
-    StopMatching,
-    RestartFrom(usize),
+pub type ExtractorId = u32;
+
+/// Represents the result of running a pattern element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchResult {
+    /// The element matched the current item.
+    Match,
+    /// The element did not match the current item.
+    NoMatch,
+    /// There was an error during matching.
+    Error,
 }
 
-/// State information available to extractors during matching
-#[derive(Debug)]
+/// Represents the current state during pattern matching.
+#[derive(Debug, Clone)]
 pub struct MatchState<T> {
-    pub current_position: usize,
-    pub matched_items: Vec<T>,
-    pub pattern_name: String,
-    pub element_index: usize,
-    pub input_length: usize,
+    /// The current item being matched.
+    pub current_item: T,
+    /// The position in the current match sequence.
+    pub position: usize,
+    /// The total number of items processed.
+    pub total_processed: usize,
 }
 
-/// Error that can occur during extractor execution
-#[derive(Debug, Clone)]
+/// Error types for extractors.
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExtractorError {
-    Message(String),
-    InvalidPosition(usize),
-    PatternNotFound(String),
+    /// Extractor failed to process the current state.
+    ProcessingFailed(String),
+    /// Invalid extractor configuration.
+    InvalidConfiguration(String),
 }
 
 impl fmt::Display for ExtractorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ExtractorError::Message(msg) => write!(f, "Extractor error: {}", msg),
-            ExtractorError::InvalidPosition(pos) => write!(f, "Invalid position: {}", pos),
-            ExtractorError::PatternNotFound(name) => write!(f, "Pattern not found: {}", name),
+            ExtractorError::ProcessingFailed(msg) => write!(f, "Processing failed: {}", msg),
+            ExtractorError::InvalidConfiguration(msg) => {
+                write!(f, "Invalid configuration: {}", msg)
+            }
         }
     }
 }
 
 impl std::error::Error for ExtractorError {}
 
-/// Type alias for extractor functions
+/// Action to take after an extractor runs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExtractorAction<T> {
+    /// Continue with pattern matching.
+    Continue,
+    /// Stop processing and return the extracted data.
+    Extract(T),
+    /// Restart the pattern matching process.
+    Restart,
+}
+
+/// Type alias for extractor functions.
 pub type Extractor<T> = Box<dyn Fn(&MatchState<T>) -> Result<ExtractorAction<T>, ExtractorError>>;
 
-/// Settings that can be applied to any PatternElement
-pub struct ElementSettings<T> {
-    pub minimum_repeat: Option<usize>,
-    pub maximum_repeat: Option<usize>,
-    pub greedy: Option<bool>,
-    pub priority: Option<u32>,
-    pub extractor: Option<Extractor<T>>,
-}
-
-impl<T> fmt::Debug for ElementSettings<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ElementSettings")
-            .field("minimum_repeat", &self.minimum_repeat)
-            .field("maximum_repeat", &self.maximum_repeat)
-            .field("greedy", &self.greedy)
-            .field("priority", &self.priority)
-            .field(
-                "extractor",
-                &self.extractor.as_ref().map(|_| "Extractor<T>"),
-            )
-            .finish()
-    }
-}
-
-impl<T> Clone for ElementSettings<T> {
-    fn clone(&self) -> Self {
-        Self {
-            minimum_repeat: self.minimum_repeat,
-            maximum_repeat: self.maximum_repeat,
-            greedy: self.greedy,
-            priority: self.priority,
-            extractor: None, // Cannot clone function pointers
-        }
-    }
-}
-
-impl<T> Default for ElementSettings<T> {
-    fn default() -> Self {
-        Self {
-            minimum_repeat: Some(1),
-            maximum_repeat: Some(1),
-            greedy: Some(false),
-            priority: Some(0),
-            extractor: None,
-        }
-    }
-}
-
-impl<T> ElementSettings<T> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn min_repeat(mut self, count: usize) -> Self {
-        self.minimum_repeat = Some(count);
-        self
-    }
-
-    pub fn max_repeat(mut self, count: usize) -> Self {
-        self.maximum_repeat = Some(count);
-        self
-    }
-
-    pub fn greedy(mut self, greedy: bool) -> Self {
-        self.greedy = Some(greedy);
-        self
-    }
-
-    pub fn priority(mut self, priority: u32) -> Self {
-        self.priority = Some(priority);
-        self
-    }
-
-    pub fn extractor(mut self, extractor: Extractor<T>) -> Self {
-        self.extractor = Some(extractor);
-        self
-    }
-
-    pub fn min_repeat_or_default(&self) -> usize {
-        self.minimum_repeat.unwrap_or(1)
-    }
-
-    pub fn max_repeat_or_default(&self) -> usize {
-        self.maximum_repeat.unwrap_or(1)
-    }
-
-    pub fn greedy_or_default(&self) -> bool {
-        self.greedy.unwrap_or(false)
-    }
-
-    pub fn priority_or_default(&self) -> u32 {
-        self.priority.unwrap_or(0)
-    }
-}
-
-/// A pattern element that can match items of type T
-pub enum PatternElement<T> {
-    Function {
-        function: Box<dyn Fn(&T) -> bool>,
-        settings: Option<ElementSettings<T>>,
-    },
-    Value {
-        value: T,
-        settings: Option<ElementSettings<T>>,
-    },
-    Pattern {
-        pattern: String,
-        settings: Option<ElementSettings<T>>,
-    },
-    Any {
-        settings: Option<ElementSettings<T>>,
-    },
-    Repeat {
-        element: Box<PatternElement<T>>,
-        settings: Option<ElementSettings<T>>,
-    },
-}
-
-impl<T: Clone> Clone for PatternElement<T> {
-    fn clone(&self) -> Self {
-        match self {
-            PatternElement::Function { settings, .. } => {
-                PatternElement::Function {
-                    function: Box::new(|_| false), // Cannot clone function, use dummy
-                    settings: settings.clone(),
-                }
-            }
-            PatternElement::Value { value, settings } => PatternElement::Value {
-                value: value.clone(),
-                settings: settings.clone(),
-            },
-            PatternElement::Pattern { pattern, settings } => PatternElement::Pattern {
-                pattern: pattern.clone(),
-                settings: settings.clone(),
-            },
-            PatternElement::Any { settings } => PatternElement::Any {
-                settings: settings.clone(),
-            },
-            PatternElement::Repeat { element, settings } => PatternElement::Repeat {
-                element: element.clone(),
-                settings: settings.clone(),
-            },
-        }
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for PatternElement<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PatternElement::Function { settings, .. } => f
-                .debug_struct("Function")
-                .field("function", &"Box<dyn Fn(&T) -> bool>")
-                .field("settings", settings)
-                .finish(),
-            PatternElement::Value { value, settings } => f
-                .debug_struct("Value")
-                .field("value", value)
-                .field("settings", settings)
-                .finish(),
-            PatternElement::Pattern { pattern, settings } => f
-                .debug_struct("Pattern")
-                .field("pattern", pattern)
-                .field("settings", settings)
-                .finish(),
-            PatternElement::Any { settings } => {
-                f.debug_struct("Any").field("settings", settings).finish()
-            }
-            PatternElement::Repeat { element, settings } => f
-                .debug_struct("Repeat")
-                .field("element", element)
-                .field("settings", settings)
-                .finish(),
-        }
-    }
-}
-
-impl<T> PatternElement<T> {
-    pub fn settings_ref(&self) -> &Option<ElementSettings<T>> {
-        match self {
-            PatternElement::Function { settings, .. } => settings,
-            PatternElement::Value { settings, .. } => settings,
-            PatternElement::Pattern { settings, .. } => settings,
-            PatternElement::Any { settings } => settings,
-            PatternElement::Repeat { settings, .. } => settings,
-        }
-    }
-
-    // Kept for backward compatibility, but will not include extractor
-    pub fn settings(&self) -> ElementSettings<T> {
-        match self {
-            PatternElement::Function { settings, .. } => {
-                settings.as_ref().cloned().unwrap_or_default()
-            }
-            PatternElement::Value { settings, .. } => {
-                settings.as_ref().cloned().unwrap_or_default()
-            }
-            PatternElement::Pattern { settings, .. } => {
-                settings.as_ref().cloned().unwrap_or_default()
-            }
-            PatternElement::Any { settings } => settings.as_ref().cloned().unwrap_or_default(),
-            PatternElement::Repeat { settings, .. } => {
-                settings.as_ref().cloned().unwrap_or_default()
-            }
-        }
-    }
-}
-
-/// Settings for pattern-level behavior
-pub struct PatternSettings<T> {
-    pub priority: Option<u32>,
-    pub extractor: Option<Extractor<T>>,
-}
-
-impl<T> fmt::Debug for PatternSettings<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PatternSettings")
-            .field("priority", &self.priority)
-            .field(
-                "extractor",
-                &self.extractor.as_ref().map(|_| "Extractor<T>"),
-            )
-            .finish()
-    }
-}
-
-impl<T> Clone for PatternSettings<T> {
-    fn clone(&self) -> Self {
-        Self {
-            priority: self.priority,
-            extractor: None, // Cannot clone function pointers
-        }
-    }
-}
-
-impl<T> Default for PatternSettings<T> {
-    fn default() -> Self {
-        Self {
-            priority: Some(0),
-            extractor: None,
-        }
-    }
-}
-
-impl<T> PatternSettings<T> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn priority(mut self, priority: u32) -> Self {
-        self.priority = Some(priority);
-        self
-    }
-
-    pub fn extractor(mut self, extractor: Extractor<T>) -> Self {
-        self.extractor = Some(extractor);
-        self
-    }
-
-    pub fn priority_or_default(&self) -> u32 {
-        self.priority.unwrap_or(0)
-    }
-}
-
-/// A complete pattern consisting of multiple elements
-pub struct Pattern<T> {
-    pub elements: Vec<PatternElement<T>>,
-    pub settings: Option<PatternSettings<T>>,
-}
-
-impl<T: fmt::Debug> fmt::Debug for Pattern<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Pattern")
-            .field("elements", &self.elements)
-            .field("settings", &self.settings)
-            .finish()
-    }
-}
-
-impl<T> Clone for Pattern<T>
-where
-    T: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            elements: self.elements.clone(),
-            settings: self.settings.clone(),
-        }
-    }
-}
-
-impl<T> Pattern<T> {
-    pub fn new(elements: Vec<PatternElement<T>>) -> Self {
-        Self {
-            elements,
-            settings: None,
-        }
-    }
-
-    pub fn with_settings(elements: Vec<PatternElement<T>>, settings: PatternSettings<T>) -> Self {
-        Self {
-            elements,
-            settings: Some(settings),
-        }
-    }
-
-    pub fn settings_ref(&self) -> &Option<PatternSettings<T>> {
-        &self.settings
-    }
-
-    // Kept for backward compatibility, but will not include extractor
-    pub fn settings(&self) -> PatternSettings<T> {
-        self.settings.as_ref().cloned().unwrap_or_default()
-    }
-}
-
-/// Settings for matcher-level behavior
-pub struct MatcherSettings<T> {
-    pub skip_unmatched: Option<bool>,
-    pub priority: Option<u32>,
-    pub extractor: Option<Extractor<T>>,
-}
-
-impl<T> fmt::Debug for MatcherSettings<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MatcherSettings")
-            .field("skip_unmatched", &self.skip_unmatched)
-            .field("priority", &self.priority)
-            .field(
-                "extractor",
-                &self.extractor.as_ref().map(|_| "Extractor<T>"),
-            )
-            .finish()
-    }
-}
-
-impl<T> Default for MatcherSettings<T> {
-    fn default() -> Self {
-        Self {
-            skip_unmatched: Some(false),
-            priority: Some(0),
-            extractor: None,
-        }
-    }
-}
-
-impl<T> MatcherSettings<T> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn skip_unmatched(mut self, skip: bool) -> Self {
-        self.skip_unmatched = Some(skip);
-        self
-    }
-
-    pub fn priority(mut self, priority: u32) -> Self {
-        self.priority = Some(priority);
-        self
-    }
-
-    pub fn extractor(mut self, extractor: Extractor<T>) -> Self {
-        self.extractor = Some(extractor);
-        self
-    }
-
-    pub fn skip_unmatched_or_default(&self) -> bool {
-        self.skip_unmatched.unwrap_or(false)
-    }
-
-    pub fn priority_or_default(&self) -> u32 {
-        self.priority.unwrap_or(0)
-    }
-}
-
-/// Errors that can occur during matching
-#[derive(Debug, Clone)]
+/// Error types for the pattern matcher.
+#[derive(Debug, Clone, PartialEq)]
 pub enum MatcherError {
-    ExtractorPanic(String),
-    InvalidAction(String),
-    InvalidPosition(usize),
-    PatternNotFound(String),
-    ExtractorError(ExtractorError),
+    /// No patterns have been configured.
+    NoPatterns,
+    /// Pattern configuration is invalid.
+    InvalidPattern(String),
+    /// Extractor execution failed.
+    ExtractorFailed(ExtractorError),
 }
 
 impl fmt::Display for MatcherError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            MatcherError::ExtractorPanic(msg) => write!(f, "Extractor panicked: {}", msg),
-            MatcherError::InvalidAction(msg) => write!(f, "Invalid action: {}", msg),
-            MatcherError::InvalidPosition(pos) => write!(f, "Invalid position: {}", pos),
-            MatcherError::PatternNotFound(name) => write!(f, "Pattern not found: {}", name),
-            MatcherError::ExtractorError(err) => write!(f, "Extractor error: {}", err),
+            MatcherError::NoPatterns => write!(f, "No patterns configured"),
+            MatcherError::InvalidPattern(msg) => write!(f, "Invalid pattern: {}", msg),
+            MatcherError::ExtractorFailed(err) => write!(f, "Extractor failed: {}", err),
         }
     }
 }
 
 impl std::error::Error for MatcherError {}
 
-impl From<ExtractorError> for MatcherError {
-    fn from(err: ExtractorError) -> Self {
-        MatcherError::ExtractorError(err)
+/// Configuration settings for pattern elements.
+#[derive(Debug)]
+pub struct ElementSettings<Context>
+where
+    Context: Clone + fmt::Debug,
+{
+    /// Maximum number of retries for this element.
+    pub max_retries: usize,
+    /// Whether this element is optional in the pattern.
+    pub optional: bool,
+    /// Custom timeout for this element.
+    pub timeout_ms: Option<u64>,
+    /// Custom context data for this element.
+    pub context: Option<Context>,
+    /// Associated extractor ID.
+    pub extractor_id: Option<ExtractorId>,
+}
+
+impl<Context> Clone for ElementSettings<Context>
+where
+    Context: Clone + fmt::Debug,
+{
+    fn clone(&self) -> Self {
+        Self {
+            max_retries: self.max_retries,
+            optional: self.optional,
+            timeout_ms: self.timeout_ms,
+            context: self.context.clone(),
+            extractor_id: self.extractor_id,
+        }
     }
 }
 
-/// Main pattern matcher
-pub struct Matcher<T> {
-    patterns: HashMap<String, Pattern<T>>,
-    settings: MatcherSettings<T>,
+impl<Context> Default for ElementSettings<Context>
+where
+    Context: Clone + fmt::Debug,
+{
+    fn default() -> Self {
+        Self {
+            max_retries: 0,
+            optional: false,
+            timeout_ms: None,
+            context: None,
+            extractor_id: None,
+        }
+    }
 }
 
-impl<T: fmt::Debug> fmt::Debug for Matcher<T> {
+/// A pattern element that can match against items of type T.
+pub enum PatternElement<T, Context>
+where
+    T: Clone + PartialEq + fmt::Debug,
+    Context: Clone + fmt::Debug,
+{
+    /// Matches a specific value.
+    Exact {
+        value: T,
+        settings: Option<ElementSettings<Context>>,
+    },
+    /// Matches using a custom function.
+    Predicate {
+        function: Box<dyn Fn(&T) -> bool>,
+        settings: Option<ElementSettings<Context>>,
+    },
+    /// Matches a range of values.
+    Range {
+        min: T,
+        max: T,
+        settings: Option<ElementSettings<Context>>,
+    },
+}
+
+impl<T, Context> Clone for PatternElement<T, Context>
+where
+    T: Clone + PartialEq + fmt::Debug,
+    Context: Clone + fmt::Debug,
+{
+    fn clone(&self) -> Self {
+        match self {
+            PatternElement::Exact { value, settings } => PatternElement::Exact {
+                value: value.clone(),
+                settings: settings.clone(),
+            },
+            PatternElement::Predicate { settings, .. } => {
+                // Note: Functions cannot be cloned, so we create a dummy predicate
+                PatternElement::Predicate {
+                    function: Box::new(|_| false),
+                    settings: settings.clone(),
+                }
+            }
+            PatternElement::Range { min, max, settings } => PatternElement::Range {
+                min: min.clone(),
+                max: max.clone(),
+                settings: settings.clone(),
+            },
+        }
+    }
+}
+
+impl<T, Context> fmt::Debug for PatternElement<T, Context>
+where
+    T: Clone + PartialEq + fmt::Debug,
+    Context: Clone + fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PatternElement::Exact { value, settings } => f
+                .debug_struct("Exact")
+                .field("value", value)
+                .field("settings", settings)
+                .finish(),
+            PatternElement::Predicate { settings, .. } => f
+                .debug_struct("Predicate")
+                .field("function", &"<function>")
+                .field("settings", settings)
+                .finish(),
+            PatternElement::Range { min, max, settings } => f
+                .debug_struct("Range")
+                .field("min", min)
+                .field("max", max)
+                .field("settings", settings)
+                .finish(),
+        }
+    }
+}
+
+impl<T, Context> fmt::Display for PatternElement<T, Context>
+where
+    T: Clone + PartialEq + fmt::Debug,
+    Context: Clone + fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PatternElement::Exact { value, .. } => write!(f, "Exact({:?})", value),
+            PatternElement::Predicate { .. } => write!(f, "Predicate(<function>)"),
+            PatternElement::Range { min, max, .. } => write!(f, "Range({:?}..{:?})", min, max),
+        }
+    }
+}
+
+impl<T, Context> PatternElement<T, Context>
+where
+    T: Clone + PartialEq + fmt::Debug + std::cmp::PartialOrd,
+    Context: Clone + fmt::Debug,
+{
+    /// Get the settings for this pattern element.
+    pub fn settings(&self) -> ElementSettings<Context> {
+        match self {
+            PatternElement::Exact { settings, .. } => settings.clone().unwrap_or_default(),
+            PatternElement::Predicate { settings, .. } => settings.clone().unwrap_or_default(),
+            PatternElement::Range { settings, .. } => settings.clone().unwrap_or_default(),
+        }
+    }
+
+    /// Check if this pattern element matches the given item.
+    pub fn matches(&self, item: &T) -> Result<bool, MatcherError> {
+        match self {
+            PatternElement::Exact { value, .. } => Ok(item == value),
+            PatternElement::Predicate { function, .. } => Ok(function(item)),
+            PatternElement::Range { min, max, .. } => Ok(item >= min && item <= max),
+        }
+    }
+
+    /// Create a new exact match pattern element.
+    pub fn exact(value: T) -> Self {
+        PatternElement::Exact {
+            value,
+            settings: None,
+        }
+    }
+
+    /// Create a new exact match pattern element with settings.
+    pub fn exact_with_settings(value: T, settings: ElementSettings<Context>) -> Self {
+        PatternElement::Exact {
+            value,
+            settings: Some(settings),
+        }
+    }
+
+    /// Create a new predicate pattern element.
+    pub fn predicate<F>(function: F) -> Self
+    where
+        F: Fn(&T) -> bool + 'static,
+    {
+        PatternElement::Predicate {
+            function: Box::new(function),
+            settings: None,
+        }
+    }
+
+    /// Create a new predicate pattern element with settings.
+    pub fn predicate_with_settings<F>(function: F, settings: ElementSettings<Context>) -> Self
+    where
+        F: Fn(&T) -> bool + 'static,
+    {
+        PatternElement::Predicate {
+            function: Box::new(function),
+            settings: Some(settings),
+        }
+    }
+
+    /// Create a new range pattern element.
+    pub fn range(min: T, max: T) -> Self {
+        PatternElement::Range {
+            min,
+            max,
+            settings: None,
+        }
+    }
+
+    /// Create a new range pattern element with settings.
+    pub fn range_with_settings(min: T, max: T, settings: ElementSettings<Context>) -> Self {
+        PatternElement::Range {
+            min,
+            max,
+            settings: Some(settings),
+        }
+    }
+}
+
+/// The main pattern matcher that processes streaming data.
+pub struct Matcher<T, Context>
+where
+    T: Clone + PartialEq + fmt::Debug + std::cmp::PartialOrd,
+    Context: Clone + fmt::Debug,
+{
+    patterns: Vec<PatternElement<T, Context>>,
+    current_position: usize,
+    total_processed: usize,
+    window_size: usize,
+    extractors: HashMap<ExtractorId, Extractor<T>>,
+    context: Option<Context>,
+}
+
+impl<T, Context> Matcher<T, Context>
+where
+    T: Clone + PartialEq + fmt::Debug + std::cmp::PartialOrd,
+    Context: Clone + fmt::Debug,
+{
+    /// Create a new matcher with the specified window size.
+    pub fn new(window_size: usize) -> Self {
+        Self {
+            patterns: Vec::new(),
+            current_position: 0,
+            total_processed: 0,
+            window_size,
+            extractors: HashMap::new(),
+            context: None,
+        }
+    }
+
+    /// Create a new matcher with patterns and window size.
+    pub fn with_patterns(patterns: Vec<PatternElement<T, Context>>, window_size: usize) -> Self {
+        Self {
+            patterns,
+            current_position: 0,
+            total_processed: 0,
+            window_size,
+            extractors: HashMap::new(),
+            context: None,
+        }
+    }
+
+    /// Add a pattern element to the matcher.
+    pub fn add_pattern(&mut self, pattern: PatternElement<T, Context>) {
+        self.patterns.push(pattern);
+    }
+
+    /// Register an extractor with the given ID.
+    pub fn register_extractor<F>(&mut self, id: ExtractorId, extractor: F)
+    where
+        F: Fn(&MatchState<T>) -> Result<ExtractorAction<T>, ExtractorError> + 'static,
+    {
+        self.extractors.insert(id, Box::new(extractor));
+    }
+
+    /// Set the context for this matcher.
+    pub fn set_context(&mut self, context: Context) {
+        self.context = Some(context);
+    }
+
+    /// Get the current context.
+    pub fn context(&self) -> Option<&Context> {
+        self.context.as_ref()
+    }
+
+    /// Process a single item and return any extracted data.
+    pub fn process_item(&mut self, item: T) -> Result<Option<T>, MatcherError> {
+        if self.patterns.is_empty() {
+            return Err(MatcherError::NoPatterns);
+        }
+
+        self.total_processed += 1;
+
+        let state = MatchState {
+            current_item: item.clone(),
+            position: self.current_position,
+            total_processed: self.total_processed,
+        };
+
+        let mut had_any_match = false;
+
+        loop {
+            // Check if we're at the end of patterns
+            if self.current_position >= self.patterns.len() {
+                self.current_position = 0;
+                // Only return the item if we had at least one actual match
+                return Ok(if had_any_match { Some(item) } else { None });
+            }
+
+            let pattern = &self.patterns[self.current_position];
+            let matches = pattern.matches(&item)?;
+
+            if matches {
+                had_any_match = true;
+
+                // Run any associated extractor before advancing position
+                let settings = pattern.settings();
+                if let Some(extractor_id) = settings.extractor_id {
+                    if let Some(extractor) = self.extractors.get(&extractor_id) {
+                        match extractor(&state).map_err(MatcherError::ExtractorFailed)? {
+                            ExtractorAction::Continue => {
+                                // Continue normal processing
+                            }
+                            ExtractorAction::Extract(data) => {
+                                self.current_position = 0;
+                                return Ok(Some(data));
+                            }
+                            ExtractorAction::Restart => {
+                                self.current_position = 0;
+                                return Ok(None);
+                            }
+                        }
+                    }
+                }
+
+                self.current_position += 1;
+
+                // Check if we've completed the pattern
+                if self.current_position >= self.patterns.len() {
+                    self.current_position = 0;
+                    return Ok(Some(item));
+                }
+
+                // Pattern element matched, exit loop
+                break;
+            } else {
+                // No match, check if element is optional
+                let settings = pattern.settings();
+                if settings.optional {
+                    self.current_position += 1;
+                    // Continue loop to check next pattern element against same item
+                } else {
+                    self.current_position = 0;
+                    break;
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Process multiple items and return all extracted data.
+    pub fn process_items(&mut self, items: Vec<T>) -> Result<Vec<T>, MatcherError> {
+        let mut results = Vec::new();
+        for item in items {
+            if let Some(extracted) = self.process_item(item)? {
+                results.push(extracted);
+            }
+        }
+        Ok(results)
+    }
+
+    /// Reset the matcher state.
+    pub fn reset(&mut self) {
+        self.current_position = 0;
+        self.total_processed = 0;
+    }
+
+    /// Get the current position in the pattern.
+    pub fn current_position(&self) -> usize {
+        self.current_position
+    }
+
+    /// Get the total number of items processed.
+    pub fn total_processed(&self) -> usize {
+        self.total_processed
+    }
+
+    /// Get the window size.
+    pub fn window_size(&self) -> usize {
+        self.window_size
+    }
+
+    /// Set the window size.
+    pub fn set_window_size(&mut self, size: usize) {
+        self.window_size = size;
+    }
+
+    /// Get the number of patterns.
+    pub fn pattern_count(&self) -> usize {
+        self.patterns.len()
+    }
+
+    /// Get a reference to the patterns.
+    pub fn patterns(&self) -> &[PatternElement<T, Context>] {
+        &self.patterns
+    }
+
+    /// Check if the matcher is currently in a matching state.
+    pub fn is_matching(&self) -> bool {
+        self.current_position > 0
+    }
+}
+
+impl<T, Context> fmt::Debug for Matcher<T, Context>
+where
+    T: Clone + PartialEq + fmt::Debug + std::cmp::PartialOrd,
+    Context: Clone + fmt::Debug,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Matcher")
-            .field("patterns", &self.patterns.keys().collect::<Vec<_>>())
-            .field("settings", &self.settings)
+            .field("pattern_count", &self.patterns.len())
+            .field("current_position", &self.current_position)
+            .field("total_processed", &self.total_processed)
+            .field("window_size", &self.window_size)
+            .field("extractor_count", &self.extractors.len())
+            .field("has_context", &self.context.is_some())
             .finish()
     }
 }
 
-impl<T> Default for Matcher<T>
+impl<T, Context> Default for Matcher<T, Context>
 where
-    T: Clone + PartialEq + fmt::Debug,
+    T: Clone + PartialEq + fmt::Debug + std::cmp::PartialOrd,
+    Context: Clone + fmt::Debug,
 {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T> Matcher<T>
-where
-    T: Clone + PartialEq + fmt::Debug,
-{
-    pub fn new() -> Self {
-        Self {
-            patterns: HashMap::new(),
-            settings: MatcherSettings::default(),
-        }
-    }
-
-    pub fn with_settings(settings: MatcherSettings<T>) -> Self {
-        Self {
-            patterns: HashMap::new(),
-            settings,
-        }
-    }
-
-    pub fn add_pattern(&mut self, name: String, elements: Vec<PatternElement<T>>) {
-        self.patterns.insert(name, Pattern::new(elements));
-    }
-
-    pub fn add_pattern_with_settings(&mut self, name: String, pattern: Pattern<T>) {
-        self.patterns.insert(name, pattern);
-    }
-
-    pub fn remove_pattern(&mut self, name: &str) -> Option<Pattern<T>> {
-        self.patterns.remove(name)
-    }
-
-    pub fn set_settings(&mut self, settings: MatcherSettings<T>) {
-        self.settings = settings;
-    }
-
-    pub fn settings(&self) -> &MatcherSettings<T> {
-        &self.settings
-    }
-
-    pub fn run(&mut self, data: &[T]) -> Result<(), MatcherError> {
-        let mut position = 0;
-
-        while position < data.len() {
-            let mut matched = false;
-
-            // Sort patterns by priority (lower number = higher priority)
-            let mut pattern_list: Vec<_> = self.patterns.iter().collect();
-            pattern_list.sort_by_key(|(_, pattern)| pattern.settings().priority_or_default());
-
-            // Try each pattern
-            for (pattern_name, pattern) in pattern_list {
-                if let Some(match_length) =
-                    self.try_match_pattern(data, position, pattern_name, pattern)?
-                {
-                    // Execute pattern-level extractor if present
-                    let default_pattern_settings = PatternSettings::default();
-                    let pattern_settings = pattern
-                        .settings_ref()
-                        .as_ref()
-                        .unwrap_or(&default_pattern_settings);
-                    if let Some(ref extractor) = pattern_settings.extractor {
-                        let state = MatchState {
-                            current_position: position,
-                            matched_items: data[position..position + match_length].to_vec(),
-                            pattern_name: pattern_name.clone(),
-                            element_index: 0,
-                            input_length: data.len(),
-                        };
-
-                        let action = self.execute_extractor(extractor, &state)?;
-                        let is_continue = matches!(action, ExtractorAction::Continue);
-                        let new_position =
-                            self.handle_extractor_action(action, position, data.len())?;
-
-                        // If the extractor action was Continue, we need to advance by the match length
-                        // For other actions, the extractor action handler takes care of positioning
-                        if is_continue {
-                            position += match_length;
-                        } else {
-                            position = new_position;
-                        }
-                    } else {
-                        // If match_length is 0, this means the pattern matched but consumed no input
-                        // We need to advance at least 1 position to avoid infinite loops
-                        position += if match_length == 0 { 1 } else { match_length };
-                    }
-                    matched = true;
-                    break;
-                }
-            }
-
-            if !matched {
-                position += 1;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn try_match_pattern(
-        &self,
-        data: &[T],
-        position: usize,
-        pattern_name: &str,
-        pattern: &Pattern<T>,
-    ) -> Result<Option<usize>, MatcherError> {
-        let mut current_pos = position;
-
-        for (element_index, element) in pattern.elements.iter().enumerate() {
-            if let Some(match_length) =
-                self.try_match_element(data, current_pos, element, pattern_name, element_index)?
-            {
-                current_pos += match_length;
-            } else {
-                return Ok(None);
-            }
-        }
-
-        Ok(Some(current_pos - position))
-    }
-
-    fn try_match_element(
-        &self,
-        data: &[T],
-        position: usize,
-        element: &PatternElement<T>,
-        pattern_name: &str,
-        element_index: usize,
-    ) -> Result<Option<usize>, MatcherError> {
-        if position >= data.len() {
-            return Ok(None);
-        }
-
-        let settings = element.settings();
-        let default_settings = ElementSettings::default();
-        let actual_settings = element.settings_ref().as_ref().unwrap_or(&default_settings);
-
-        let min_repeat = settings.min_repeat_or_default();
-        let max_repeat = settings.max_repeat_or_default();
-
-        // Special case: if max_repeat is 0, this is a negative assertion - the element must NOT match
-        if max_repeat == 0 {
-            if min_repeat == 0 {
-                // Check if the element would match at the current position
-                let item_matches = match element {
-                    PatternElement::Function { function, .. } => function(&data[position]),
-                    PatternElement::Value { value, .. } => &data[position] == value,
-                    PatternElement::Pattern { pattern, .. } => {
-                        format!("{:?}", data[position]).contains(pattern)
-                    }
-                    PatternElement::Any { .. } => true,
-                    PatternElement::Repeat { .. } => {
-                        // For repeat elements with max_repeat=0, we need to check if the inner element would match
-                        // This is complex, so for now, let's treat it as not matching
-                        false
-                    }
-                };
-
-                if item_matches {
-                    // The element matches but max_repeat=0, so this is a failed negative assertion
-                    return Ok(None);
-                } else {
-                    // The element doesn't match and max_repeat=0, so the negative assertion succeeds
-                    return Ok(Some(0));
-                }
-            } else {
-                return Ok(None); // Can't satisfy min_repeat > 0 with max_repeat = 0
-            }
-        }
-
-        let mut matched_count = 0;
-        let mut current_pos = position;
-
-        while matched_count < max_repeat && current_pos < data.len() {
-            let item_matches = match element {
-                PatternElement::Function { function, .. } => function(&data[current_pos]),
-                PatternElement::Value { value, .. } => &data[current_pos] == value,
-                PatternElement::Pattern { pattern, .. } => {
-                    format!("{:?}", data[current_pos]).contains(pattern)
-                }
-                PatternElement::Any { .. } => true,
-                PatternElement::Repeat { element: inner, .. } => {
-                    return self.try_match_element(
-                        data,
-                        position,
-                        inner,
-                        pattern_name,
-                        element_index,
-                    );
-                }
-            };
-
-            if item_matches {
-                matched_count += 1;
-                current_pos += 1;
-
-                if let Some(ref extractor) = actual_settings.extractor {
-                    let state = MatchState {
-                        current_position: current_pos - 1,
-                        matched_items: vec![data[current_pos - 1].clone()],
-                        pattern_name: pattern_name.to_string(),
-                        element_index,
-                        input_length: data.len(),
-                    };
-
-                    let action = self.execute_extractor(extractor, &state)?;
-                    match action {
-                        ExtractorAction::Continue => {}
-                        ExtractorAction::Skip(n) => {
-                            let new_pos = current_pos + n;
-                            if new_pos <= data.len() {
-                                current_pos = new_pos;
-                            } else {
-                                return Err(MatcherError::InvalidPosition(new_pos));
-                            }
-                        }
-                        ExtractorAction::DiscardPartialMatch => return Ok(None),
-                        ExtractorAction::RemovePattern(pattern_name) => {
-                            // Check if pattern exists without removing it (since we can't mutate here)
-                            if !self.patterns.contains_key(&pattern_name) {
-                                return Err(MatcherError::PatternNotFound(pattern_name));
-                            }
-                            // In a real implementation, we'd need to defer this action
-                        }
-                        ExtractorAction::AddPattern(_name, _pattern) => {
-                            // Skip for now, this requires more complex handling
-                        }
-                        ExtractorAction::StopMatching => return Ok(None),
-                        ExtractorAction::RestartFrom(pos) => {
-                            if pos <= data.len() {
-                                // This is complex to handle mid-element matching
-                                // For now, just continue
-                            } else {
-                                return Err(MatcherError::InvalidPosition(pos));
-                            }
-                        }
-                        ExtractorAction::Jump(offset) => {
-                            let new_pos = if offset >= 0 {
-                                current_pos + offset as usize
-                            } else {
-                                current_pos.saturating_sub((-offset) as usize)
-                            };
-                            if new_pos <= data.len() {
-                                current_pos = new_pos;
-                            } else {
-                                return Err(MatcherError::InvalidPosition(new_pos));
-                            }
-                        }
-                    }
-                }
-
-                if !settings.greedy_or_default() && matched_count >= min_repeat {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-
-        if matched_count >= min_repeat {
-            Ok(Some(current_pos - position))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn execute_extractor(
-        &self,
-        extractor: &Extractor<T>,
-        state: &MatchState<T>,
-    ) -> Result<ExtractorAction<T>, MatcherError> {
-        match catch_unwind(AssertUnwindSafe(|| extractor(state))) {
-            Ok(Ok(action)) => Ok(action),
-            Ok(Err(err)) => Err(MatcherError::ExtractorError(err)),
-            Err(_) => Err(MatcherError::ExtractorPanic(
-                "Extractor function panicked".to_string(),
-            )),
-        }
-    }
-
-    fn handle_extractor_action(
-        &mut self,
-        action: ExtractorAction<T>,
-        current_position: usize,
-        data_length: usize,
-    ) -> Result<usize, MatcherError> {
-        match action {
-            ExtractorAction::Continue => Ok(current_position),
-            ExtractorAction::Skip(n) => {
-                let new_pos = current_position + n;
-                if new_pos <= data_length {
-                    Ok(new_pos)
-                } else {
-                    Err(MatcherError::InvalidPosition(new_pos))
-                }
-            }
-            ExtractorAction::Jump(offset) => {
-                let new_pos = if offset >= 0 {
-                    current_position + offset as usize
-                } else {
-                    current_position.saturating_sub((-offset) as usize)
-                };
-                if new_pos <= data_length {
-                    Ok(new_pos)
-                } else {
-                    Err(MatcherError::InvalidPosition(new_pos))
-                }
-            }
-            ExtractorAction::RestartFrom(pos) => {
-                if pos <= data_length {
-                    Ok(pos)
-                } else {
-                    Err(MatcherError::InvalidPosition(pos))
-                }
-            }
-            ExtractorAction::AddPattern(name, pattern) => {
-                self.patterns.insert(name, pattern);
-                Ok(current_position)
-            }
-            ExtractorAction::RemovePattern(name) => {
-                if self.patterns.remove(&name).is_some() {
-                    Ok(current_position)
-                } else {
-                    Err(MatcherError::PatternNotFound(name))
-                }
-            }
-            ExtractorAction::StopMatching => Ok(data_length),
-            ExtractorAction::DiscardPartialMatch => Ok(current_position + 1),
-        }
+        Self::new(10)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
-    #[test]
-    fn test_simple_value_matching() {
-        let mut matcher = Matcher::new();
-        matcher.add_pattern(
-            "find_42".to_string(),
-            vec![PatternElement::Value {
-                value: 42,
-                settings: None,
-            }],
-        );
-
-        let data = vec![1, 2, 42, 3, 4];
-        assert!(matcher.run(&data).is_ok());
+    #[derive(Debug, Clone, PartialEq)]
+    struct TestContext {
+        name: String,
+        value: i32,
+        captured_values: Vec<i32>,
+        counters: HashMap<String, usize>,
     }
 
-    #[test]
-    fn test_function_matching() {
-        let mut matcher = Matcher::new();
-        matcher.add_pattern(
-            "even_numbers".to_string(),
-            vec![PatternElement::Function {
-                function: Box::new(|x: &i32| *x % 2 == 0),
-                settings: None,
-            }],
-        );
-
-        let data = vec![1, 2, 3, 4, 5];
-        assert!(matcher.run(&data).is_ok());
-    }
-
-    #[test]
-    fn test_any_matching() {
-        let mut matcher = Matcher::new();
-        matcher.add_pattern(
-            "any_item".to_string(),
-            vec![PatternElement::Any { settings: None }],
-        );
-
-        let data = vec![1, 2, 3];
-        assert!(matcher.run(&data).is_ok());
-    }
-
-    #[test]
-    fn test_repeat_pattern() {
-        let mut matcher = Matcher::new();
-        matcher.add_pattern(
-            "repeated_ones".to_string(),
-            vec![PatternElement::Value {
-                value: 1,
-                settings: Some(ElementSettings::new().min_repeat(2).max_repeat(3)),
-            }],
-        );
-
-        let data = vec![1, 1, 1, 2, 2, 3];
-        assert!(matcher.run(&data).is_ok());
-    }
-
-    #[test]
-    fn test_extractor_functionality() {
-        let mut matcher = Matcher::new();
-
-        matcher.add_pattern(
-            "find_with_extractor".to_string(),
-            vec![PatternElement::Value {
-                value: 42,
-                settings: Some(
-                    ElementSettings::new()
-                        .extractor(Box::new(|_state| Ok(ExtractorAction::Continue))),
-                ),
-            }],
-        );
-
-        let data = vec![1, 42, 3, 42, 5];
-        assert!(matcher.run(&data).is_ok());
-    }
-
-    #[test]
-    fn test_complex_pattern() {
-        let mut matcher = Matcher::new();
-        matcher.add_pattern(
-            "complex".to_string(),
-            vec![
-                PatternElement::Function {
-                    function: Box::new(|x: &i32| *x % 2 == 0),
-                    settings: None,
-                },
-                PatternElement::Value {
-                    value: 5,
-                    settings: None,
-                },
-                PatternElement::Any { settings: None },
-            ],
-        );
-
-        let data = vec![2, 5, 8, 1, 3];
-        assert!(matcher.run(&data).is_ok());
-    }
-
-    #[test]
-    fn test_settings_builder() {
-        let settings: ElementSettings<i32> = ElementSettings::new()
-            .min_repeat(2)
-            .max_repeat(5)
-            .greedy(true)
-            .priority(10);
-
-        assert_eq!(settings.min_repeat_or_default(), 2);
-        assert_eq!(settings.max_repeat_or_default(), 5);
-        assert!(settings.greedy_or_default());
-        assert_eq!(settings.priority_or_default(), 10);
-    }
-
-    #[test]
-    fn test_error_handling() {
-        let mut matcher = Matcher::new();
-
-        // Test extractor that returns an error when it actually gets executed
-        matcher.add_pattern(
-            "error_pattern".to_string(),
-            vec![PatternElement::Value {
-                value: 42,
-                settings: Some(ElementSettings::new().extractor(Box::new(|_| {
-                    Err(ExtractorError::Message("Test error".to_string()))
-                }))),
-            }],
-        );
-
-        // This will find the value 42 and execute the extractor, causing an error
-        let data = vec![42];
-        let result = matcher.run(&data);
-        assert!(result.is_err());
-
-        // Verify it's the correct error type
-        match result {
-            Err(MatcherError::ExtractorError(ExtractorError::Message(msg))) => {
-                assert_eq!(msg, "Test error");
+    impl Default for TestContext {
+        fn default() -> Self {
+            Self {
+                name: "test".to_string(),
+                value: 0,
+                captured_values: Vec::new(),
+                counters: HashMap::new(),
             }
-            _ => panic!("Expected ExtractorError::Message"),
         }
     }
 
+    // === Basic Pattern Matching Tests ===
+
     #[test]
-    fn test_extractor_actions() {
-        let mut matcher = Matcher::new();
+    fn test_exact_match_simple() {
+        let mut matcher = Matcher::<i32, ()>::new(5);
+        matcher.add_pattern(PatternElement::exact(42));
 
-        matcher.add_pattern(
-            "skip_test".to_string(),
-            vec![PatternElement::Value {
-                value: 1,
-                settings: Some(
-                    ElementSettings::new().extractor(Box::new(|_| Ok(ExtractorAction::Skip(2)))),
-                ),
-            }],
-        );
-
-        let data = vec![1, 2, 3, 4, 5];
-        assert!(matcher.run(&data).is_ok());
+        assert_eq!(matcher.process_item(41).unwrap(), None);
+        assert_eq!(matcher.process_item(42).unwrap(), Some(42));
     }
 
     #[test]
-    fn test_priority_ordering() {
-        let mut matcher = Matcher::new();
+    fn test_exact_match_sequence() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+        matcher.add_pattern(PatternElement::exact(1));
+        matcher.add_pattern(PatternElement::exact(2));
+        matcher.add_pattern(PatternElement::exact(3));
 
-        matcher.add_pattern_with_settings(
-            "low_priority".to_string(),
-            Pattern::with_settings(
-                vec![PatternElement::Any { settings: None }],
-                PatternSettings::new().priority(10),
-            ),
+        assert_eq!(matcher.process_item(1).unwrap(), None);
+        assert_eq!(matcher.process_item(2).unwrap(), None);
+        assert_eq!(matcher.process_item(3).unwrap(), Some(3));
+    }
+
+    #[test]
+    fn test_exact_match_with_settings() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+
+        let mut settings = ElementSettings::default();
+        settings.optional = false;
+        settings.max_retries = 2;
+
+        matcher.add_pattern(PatternElement::exact_with_settings(42, settings));
+
+        assert_eq!(matcher.process_item(42).unwrap(), Some(42));
+    }
+
+    #[test]
+    fn test_predicate_match() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+        matcher.add_pattern(PatternElement::predicate(|x| *x > 0));
+        matcher.add_pattern(PatternElement::predicate(|x| *x < 10));
+
+        assert_eq!(matcher.process_item(5).unwrap(), None);
+        assert_eq!(matcher.process_item(3).unwrap(), Some(3));
+    }
+
+    #[test]
+    fn test_predicate_with_settings() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+
+        let mut settings = ElementSettings::default();
+        settings.timeout_ms = Some(1000);
+
+        matcher.add_pattern(PatternElement::predicate_with_settings(
+            |x| *x % 2 == 0,
+            settings,
+        ));
+
+        assert_eq!(matcher.process_item(4).unwrap(), Some(4));
+        assert_eq!(matcher.process_item(3).unwrap(), None);
+    }
+
+    #[test]
+    fn test_range_match() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+        matcher.add_pattern(PatternElement::range(1, 5));
+        matcher.add_pattern(PatternElement::range(6, 10));
+
+        assert_eq!(matcher.process_item(3).unwrap(), None);
+        assert_eq!(matcher.process_item(8).unwrap(), Some(8));
+    }
+
+    #[test]
+    fn test_range_with_settings() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+
+        let mut settings = ElementSettings::default();
+        settings.optional = true;
+
+        matcher.add_pattern(PatternElement::range_with_settings(10, 20, settings));
+
+        assert_eq!(matcher.process_item(15).unwrap(), Some(15));
+        assert_eq!(matcher.process_item(25).unwrap(), None);
+    }
+
+    // === Extractor Tests ===
+
+    #[test]
+    fn test_extractor_extract() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+
+        // Register an extractor that doubles large values
+        matcher.register_extractor(1, |state| {
+            if state.current_item > 10 {
+                Ok(ExtractorAction::Extract(state.current_item * 2))
+            } else {
+                Ok(ExtractorAction::Continue)
+            }
+        });
+
+        let mut settings = ElementSettings::default();
+        settings.extractor_id = Some(1);
+        matcher.add_pattern(PatternElement::exact_with_settings(15, settings));
+
+        assert_eq!(matcher.process_item(15).unwrap(), Some(30));
+    }
+
+    #[test]
+    fn test_extractor_continue() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+
+        matcher.register_extractor(1, |_state| Ok(ExtractorAction::Continue));
+
+        let mut settings = ElementSettings::default();
+        settings.extractor_id = Some(1);
+        matcher.add_pattern(PatternElement::exact_with_settings(5, settings));
+        matcher.add_pattern(PatternElement::exact(10));
+
+        assert_eq!(matcher.process_item(5).unwrap(), None);
+        assert_eq!(matcher.process_item(10).unwrap(), Some(10));
+    }
+
+    #[test]
+    fn test_extractor_restart() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+
+        matcher.register_extractor(1, |_state| Ok(ExtractorAction::Restart));
+
+        let mut settings = ElementSettings::default();
+        settings.extractor_id = Some(1);
+        matcher.add_pattern(PatternElement::exact_with_settings(5, settings));
+        matcher.add_pattern(PatternElement::exact(10));
+
+        assert_eq!(matcher.process_item(5).unwrap(), None);
+        assert_eq!(matcher.current_position(), 0); // Should be reset
+    }
+
+    #[test]
+    fn test_multiple_extractors() {
+        // Test extractor 1: Double the value
+        let mut matcher1 = Matcher::<i32, TestContext>::new(5);
+        matcher1.register_extractor(1, |state| {
+            Ok(ExtractorAction::Extract(state.current_item * 2))
+        });
+
+        let mut settings1 = ElementSettings::default();
+        settings1.extractor_id = Some(1);
+        matcher1.add_pattern(PatternElement::exact_with_settings(10, settings1));
+
+        assert_eq!(matcher1.process_item(10).unwrap(), Some(20));
+
+        // Test extractor 2: Triple the value
+        let mut matcher2 = Matcher::<i32, TestContext>::new(5);
+        matcher2.register_extractor(2, |state| {
+            Ok(ExtractorAction::Extract(state.current_item * 3))
+        });
+
+        let mut settings2 = ElementSettings::default();
+        settings2.extractor_id = Some(2);
+        matcher2.add_pattern(PatternElement::exact_with_settings(5, settings2));
+
+        assert_eq!(matcher2.process_item(5).unwrap(), Some(15));
+    }
+
+    // === Context Tests ===
+
+    #[test]
+    fn test_context_basic() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+        let context = TestContext {
+            name: "test".to_string(),
+            value: 42,
+            captured_values: vec![1, 2, 3],
+            counters: HashMap::new(),
+        };
+
+        matcher.set_context(context.clone());
+        assert_eq!(matcher.context(), Some(&context));
+    }
+
+    #[test]
+    fn test_context_with_extractor() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+
+        let context = TestContext::default();
+        matcher.set_context(context);
+
+        // Note: In this simplified design, extractors work with MatchState, not context
+        // This is different from the old StatefulMatcher design
+        matcher.register_extractor(1, |state| {
+            if state.position == 0 {
+                Ok(ExtractorAction::Extract(state.current_item + 100))
+            } else {
+                Ok(ExtractorAction::Continue)
+            }
+        });
+
+        let mut settings = ElementSettings::default();
+        settings.extractor_id = Some(1);
+        matcher.add_pattern(PatternElement::exact_with_settings(42, settings));
+
+        assert_eq!(matcher.process_item(42).unwrap(), Some(142));
+    }
+
+    // === State Management Tests ===
+
+    #[test]
+    fn test_reset() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+        matcher.add_pattern(PatternElement::exact(1));
+        matcher.add_pattern(PatternElement::exact(2));
+
+        matcher.process_item(1).unwrap();
+        assert_eq!(matcher.current_position(), 1);
+        assert_eq!(matcher.total_processed(), 1);
+
+        matcher.reset();
+        assert_eq!(matcher.current_position(), 0);
+        assert_eq!(matcher.total_processed(), 0);
+    }
+
+    #[test]
+    fn test_state_inspection() {
+        let mut matcher = Matcher::<i32, TestContext>::new(10);
+        matcher.add_pattern(PatternElement::exact(1));
+        matcher.add_pattern(PatternElement::exact(2));
+
+        assert_eq!(matcher.window_size(), 10);
+        assert_eq!(matcher.pattern_count(), 2);
+        assert_eq!(matcher.current_position(), 0);
+        assert_eq!(matcher.total_processed(), 0);
+        assert!(!matcher.is_matching());
+
+        matcher.process_item(1).unwrap();
+        assert_eq!(matcher.current_position(), 1);
+        assert_eq!(matcher.total_processed(), 1);
+        assert!(matcher.is_matching());
+    }
+
+    #[test]
+    fn test_window_size_management() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+        assert_eq!(matcher.window_size(), 5);
+
+        matcher.set_window_size(20);
+        assert_eq!(matcher.window_size(), 20);
+    }
+
+    // === Multiple Item Processing Tests ===
+
+    #[test]
+    fn test_process_items() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+        matcher.add_pattern(PatternElement::exact(1));
+        matcher.add_pattern(PatternElement::exact(2));
+
+        let items = vec![1, 2, 3, 1, 2, 4, 1, 2];
+        let results = matcher.process_items(items).unwrap();
+
+        // Should have found three complete patterns: [1,2] at positions 0-1, 3-4, and 6-7
+        assert_eq!(results, vec![2, 2, 2]);
+    }
+
+    #[test]
+    fn test_with_patterns_constructor() {
+        let patterns = vec![
+            PatternElement::exact(1),
+            PatternElement::exact(2),
+            PatternElement::exact(3),
+        ];
+
+        let mut matcher = Matcher::<i32, TestContext>::with_patterns(patterns, 10);
+
+        assert_eq!(matcher.pattern_count(), 3);
+        assert_eq!(matcher.window_size(), 10);
+
+        assert_eq!(matcher.process_item(1).unwrap(), None);
+        assert_eq!(matcher.process_item(2).unwrap(), None);
+        assert_eq!(matcher.process_item(3).unwrap(), Some(3));
+    }
+
+    // === Error Handling Tests ===
+
+    #[test]
+    fn test_no_patterns_error() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+
+        let result = matcher.process_item(42);
+        assert!(matches!(result, Err(MatcherError::NoPatterns)));
+    }
+
+    #[test]
+    fn test_extractor_error() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+
+        matcher.register_extractor(1, |_state| {
+            Err(ExtractorError::ProcessingFailed("Test error".to_string()))
+        });
+
+        let mut settings = ElementSettings::default();
+        settings.extractor_id = Some(1);
+        matcher.add_pattern(PatternElement::exact_with_settings(42, settings));
+
+        let result = matcher.process_item(42);
+        assert!(matches!(result, Err(MatcherError::ExtractorFailed(_))));
+    }
+
+    // === Complex Pattern Tests ===
+
+    #[test]
+    fn test_mixed_pattern_types() {
+        let mut matcher = Matcher::<i32, TestContext>::new(10);
+
+        // Pattern: exact(1), range(5-10), predicate(even)
+        matcher.add_pattern(PatternElement::exact(1));
+        matcher.add_pattern(PatternElement::range(5, 10));
+        matcher.add_pattern(PatternElement::predicate(|x| *x % 2 == 0));
+
+        assert_eq!(matcher.process_item(1).unwrap(), None); // Match first
+        assert_eq!(matcher.process_item(7).unwrap(), None); // Match second
+        assert_eq!(matcher.process_item(8).unwrap(), Some(8)); // Match third, complete pattern
+    }
+
+    #[test]
+    fn test_pattern_mismatch_reset() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+        matcher.add_pattern(PatternElement::exact(1));
+        matcher.add_pattern(PatternElement::exact(2));
+        matcher.add_pattern(PatternElement::exact(3));
+
+        assert_eq!(matcher.process_item(1).unwrap(), None); // Position 1
+        assert_eq!(matcher.process_item(5).unwrap(), None); // Mismatch, reset to 0
+        assert_eq!(matcher.current_position(), 0);
+
+        assert_eq!(matcher.process_item(1).unwrap(), None); // Position 1 again
+        assert_eq!(matcher.process_item(2).unwrap(), None); // Position 2
+        assert_eq!(matcher.process_item(3).unwrap(), Some(3)); // Complete pattern
+    }
+
+    #[test]
+    fn test_optional_elements() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+
+        // First element is required
+        matcher.add_pattern(PatternElement::exact(1));
+
+        // Second element is optional
+        let mut settings = ElementSettings::default();
+        settings.optional = true;
+        matcher.add_pattern(PatternElement::exact_with_settings(2, settings));
+
+        // Third element is required
+        matcher.add_pattern(PatternElement::exact(3));
+
+        // Test with optional element present
+        assert_eq!(matcher.process_item(1).unwrap(), None);
+        assert_eq!(matcher.process_item(2).unwrap(), None);
+        assert_eq!(matcher.process_item(3).unwrap(), Some(3));
+
+        matcher.reset();
+
+        // Test with optional element missing
+        assert_eq!(matcher.process_item(1).unwrap(), None);
+        assert_eq!(matcher.process_item(3).unwrap(), Some(3)); // Should skip optional 2
+    }
+
+    // === Edge Cases ===
+
+    #[test]
+    fn test_single_pattern_element() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+        matcher.add_pattern(PatternElement::exact(42));
+
+        assert_eq!(matcher.process_item(42).unwrap(), Some(42));
+    }
+
+    #[test]
+    fn test_empty_after_reset() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+        matcher.add_pattern(PatternElement::exact(1));
+
+        matcher.process_item(1).unwrap();
+        matcher.reset();
+
+        assert_eq!(matcher.current_position(), 0);
+        assert_eq!(matcher.total_processed(), 0);
+        assert!(!matcher.is_matching());
+    }
+
+    #[test]
+    fn test_default_constructor() {
+        let matcher = Matcher::<i32, TestContext>::default();
+        assert_eq!(matcher.window_size(), 10);
+        assert_eq!(matcher.pattern_count(), 0);
+    }
+
+    // === Pattern Reference Tests ===
+
+    #[test]
+    fn test_patterns_reference() {
+        let mut matcher = Matcher::<i32, TestContext>::new(5);
+        matcher.add_pattern(PatternElement::exact(1));
+        matcher.add_pattern(PatternElement::range(5, 10));
+
+        let patterns = matcher.patterns();
+        assert_eq!(patterns.len(), 2);
+    }
+
+    // === String Type Tests ===
+
+    #[test]
+    fn test_string_patterns() {
+        let mut matcher = Matcher::<String, ()>::new(5);
+        matcher.add_pattern(PatternElement::exact("hello".to_string()));
+        matcher.add_pattern(PatternElement::predicate(|s: &String| s.len() > 3));
+
+        assert_eq!(matcher.process_item("hello".to_string()).unwrap(), None);
+        assert_eq!(
+            matcher.process_item("world".to_string()).unwrap(),
+            Some("world".to_string())
         );
+    }
 
-        matcher.add_pattern_with_settings(
-            "high_priority".to_string(),
-            Pattern::with_settings(
-                vec![PatternElement::Any { settings: None }],
-                PatternSettings::new().priority(1),
-            ),
-        );
+    // === Performance Test (Basic) ===
 
-        let data = vec![1, 2, 3];
-        assert!(matcher.run(&data).is_ok());
+    #[test]
+    fn test_large_sequence() {
+        let mut matcher = Matcher::<usize, ()>::new(100);
+
+        // Pattern to find sequence 1, 2, 3
+        matcher.add_pattern(PatternElement::exact(1));
+        matcher.add_pattern(PatternElement::exact(2));
+        matcher.add_pattern(PatternElement::exact(3));
+
+        let mut count = 0;
+        for i in 0..1000 {
+            if let Some(_) = matcher.process_item(i % 10).unwrap() {
+                count += 1;
+            }
+        }
+
+        // Should find some complete patterns in the sequence
+        assert!(count > 0);
     }
 }

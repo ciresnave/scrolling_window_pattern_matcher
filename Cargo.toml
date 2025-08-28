@@ -1,14 +1,14 @@
 [package]
 name = "scrolling_window_pattern_matcher"
 authors = ["Eric Evans <ciresnave@gmail.com>"]
-description = "A flexible pattern matching library with extractor-driven architecture for dynamic behavior modification."
+description = "A unified pattern matching library with optional context support and extractor-driven architecture for streaming data processing."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ciresnave/scrolling_window_pattern_matcher"
 homepage = "https://github.com/ciresnave/scrolling_window_pattern_matcher"
 documentation = "https://docs.rs/scrolling_window_pattern_matcher"
 keywords = ["pattern", "matching", "parsing", "text", "sequence"]
 categories = ["parsing", "text-processing", "algorithms"]
-version = "2.0.0"
+version = "3.0.1"
 edition = "2021"
 rust-version = "1.70"
 

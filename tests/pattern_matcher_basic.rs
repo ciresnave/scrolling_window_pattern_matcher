@@ -1,257 +1,224 @@
-use scrolling_window_pattern_matcher::{
-    ElementSettings, ExtractorAction, ExtractorError, Matcher, PatternElement,
-};
+//! Basic integration tests for the unified pattern matcher API
+//!
+//! These tests verify that the simplified API works correctly for basic
+//! pattern matching scenarios.
 
-#[test]
-fn test_value_pattern_match() {
-    let mut matcher = Matcher::new();
-    matcher.add_pattern(
-        "find_3".to_string(),
-        vec![PatternElement::Value {
-            value: 3,
-            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-        }],
-    );
+use scrolling_window_pattern_matcher::{ElementSettings, ExtractorAction, Matcher, PatternElement};
 
-    let window = vec![1, 2, 3, 4, 5];
-    let result = matcher.run(&window);
-    assert!(result.is_ok());
+#[derive(Debug, Clone)]
+struct TestContext {
+    name: String,
+    captured_values: Vec<i32>,
 }
 
 #[test]
-fn test_wildcard_pattern_match() {
-    let mut matcher = Matcher::new();
-    matcher.add_pattern(
-        "any_item".to_string(),
-        vec![PatternElement::Any {
-            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-        }],
-    );
+fn test_exact_value_match() {
+    let mut matcher = Matcher::<i32, TestContext>::new(10);
+    matcher.add_pattern(PatternElement::exact(42));
 
-    let window = vec![1, 2, 3];
-    let result = matcher.run(&window);
-    assert!(result.is_ok());
+    // Single exact match
+    assert_eq!(matcher.process_item(42).unwrap(), Some(42));
+    assert_eq!(matcher.process_item(43).unwrap(), None);
 }
 
 #[test]
-fn test_custom_matcher() {
-    let mut matcher = Matcher::new();
-    matcher.add_pattern(
-        "even_numbers".to_string(),
-        vec![PatternElement::Function {
-            function: Box::new(|x: &i32| *x % 2 == 0),
-            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-        }],
-    );
+fn test_predicate_match() {
+    let mut matcher = Matcher::<i32, TestContext>::new(10);
+    matcher.add_pattern(PatternElement::predicate(|x| *x % 2 == 0));
 
-    let window = vec![1, 2, 3, 4, 5];
-    let result = matcher.run(&window);
-    assert!(result.is_ok());
+    // Should match even numbers
+    assert_eq!(matcher.process_item(2).unwrap(), Some(2));
+    assert_eq!(matcher.process_item(4).unwrap(), Some(4));
+    assert_eq!(matcher.process_item(1).unwrap(), None);
+    assert_eq!(matcher.process_item(3).unwrap(), None);
 }
 
 #[test]
-fn test_repeat_quantifier() {
-    let mut matcher = Matcher::new();
-    matcher.add_pattern(
-        "repeated_ones".to_string(),
-        vec![PatternElement::Value {
-            value: 1,
-            settings: Some(ElementSettings::new().min_repeat(2).max_repeat(2)),
-        }],
-    );
+fn test_range_match() {
+    let mut matcher = Matcher::<i32, TestContext>::new(10);
+    matcher.add_pattern(PatternElement::range(10, 20));
 
-    let window = vec![1, 1, 2, 2, 3, 3];
-    let result = matcher.run(&window);
-    assert!(result.is_ok());
+    // Should match values in range [10, 20]
+    assert_eq!(matcher.process_item(10).unwrap(), Some(10));
+    assert_eq!(matcher.process_item(15).unwrap(), Some(15));
+    assert_eq!(matcher.process_item(20).unwrap(), Some(20));
+    assert_eq!(matcher.process_item(9).unwrap(), None);
+    assert_eq!(matcher.process_item(21).unwrap(), None);
 }
 
 #[test]
-fn test_multiple_patterns() {
-    let mut matcher = Matcher::new();
+fn test_sequence_pattern() {
+    let mut matcher = Matcher::<i32, TestContext>::new(10);
+    matcher.add_pattern(PatternElement::exact(1));
+    matcher.add_pattern(PatternElement::exact(2));
+    matcher.add_pattern(PatternElement::exact(3));
 
-    matcher.add_pattern(
-        "find_1".to_string(),
-        vec![PatternElement::Value {
-            value: 1,
-            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-        }],
-    );
+    // Should match sequence [1, 2, 3]
+    assert_eq!(matcher.process_item(1).unwrap(), None);
+    assert_eq!(matcher.process_item(2).unwrap(), None);
+    assert_eq!(matcher.process_item(3).unwrap(), Some(3));
 
-    matcher.add_pattern(
-        "find_2".to_string(),
-        vec![PatternElement::Value {
-            value: 2,
-            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-        }],
-    );
-
-    let window = vec![1, 2, 1, 2, 1];
-    let result = matcher.run(&window);
-
-    // Should successfully match without errors
-    assert!(result.is_ok());
+    // Reset and try again
+    matcher.reset();
+    assert_eq!(matcher.process_item(1).unwrap(), None);
+    assert_eq!(matcher.process_item(2).unwrap(), None);
+    assert_eq!(matcher.process_item(3).unwrap(), Some(3));
 }
 
 #[test]
-fn test_empty_window() {
-    let mut matcher = Matcher::new();
-    matcher.add_pattern(
-        "find_1".to_string(),
-        vec![PatternElement::Value {
-            value: 1,
-            settings: Some(ElementSettings::new().min_repeat(1).max_repeat(1)),
-        }],
-    );
+fn test_pattern_mismatch_reset() {
+    let mut matcher = Matcher::<i32, TestContext>::new(10);
+    matcher.add_pattern(PatternElement::exact(1));
+    matcher.add_pattern(PatternElement::exact(2));
 
-    let window: Vec<i32> = vec![];
-    let result = matcher.run(&window);
-    assert!(result.is_ok());
+    // Start matching then fail
+    assert_eq!(matcher.process_item(1).unwrap(), None);
+    assert_eq!(matcher.process_item(3).unwrap(), None); // Should reset
+
+    // Try again
+    assert_eq!(matcher.process_item(1).unwrap(), None);
+    assert_eq!(matcher.process_item(2).unwrap(), Some(2)); // Should succeed
 }
 
 #[test]
-fn test_extractor_functionality() {
-    let mut matcher = Matcher::new();
+fn test_optional_elements() {
+    let mut matcher = Matcher::<i32, TestContext>::new(10);
 
-    matcher.add_pattern(
-        "find_with_extractor".to_string(),
-        vec![PatternElement::Value {
-            value: 42,
-            settings: Some(
-                ElementSettings::new().extractor(Box::new(|_state| Ok(ExtractorAction::Continue))),
-            ),
-        }],
-    );
+    matcher.add_pattern(PatternElement::exact(1));
 
-    let window = vec![1, 42, 3, 42, 5];
-    let result = matcher.run(&window);
-    assert!(result.is_ok());
+    let mut settings = ElementSettings::default();
+    settings.optional = true;
+    matcher.add_pattern(PatternElement::exact_with_settings(2, settings));
+
+    matcher.add_pattern(PatternElement::exact(3));
+
+    // Test with optional element present
+    assert_eq!(matcher.process_item(1).unwrap(), None);
+    assert_eq!(matcher.process_item(2).unwrap(), None);
+    assert_eq!(matcher.process_item(3).unwrap(), Some(3));
+
+    matcher.reset();
+
+    // Test with optional element missing
+    assert_eq!(matcher.process_item(1).unwrap(), None);
+    assert_eq!(matcher.process_item(3).unwrap(), Some(3));
 }
 
 #[test]
-fn test_settings_builder() {
-    let settings: ElementSettings<i32> = ElementSettings::new()
-        .min_repeat(2)
-        .max_repeat(5)
-        .greedy(true)
-        .priority(10);
+fn test_extractors() {
+    let mut matcher = Matcher::<i32, TestContext>::new(10);
 
-    assert_eq!(settings.min_repeat_or_default(), 2);
-    assert_eq!(settings.max_repeat_or_default(), 5);
-    assert!(settings.greedy_or_default());
-    assert_eq!(settings.priority_or_default(), 10);
+    // Register an extractor that doubles the value
+    matcher.register_extractor(1, |state| {
+        Ok(ExtractorAction::Extract(state.current_item * 2))
+    });
+
+    let mut settings = ElementSettings::default();
+    settings.extractor_id = Some(1);
+    matcher.add_pattern(PatternElement::exact_with_settings(10, settings));
+
+    // Should extract doubled value
+    assert_eq!(matcher.process_item(10).unwrap(), Some(20));
 }
 
 #[test]
-fn test_error_handling() {
-    let mut matcher = Matcher::new();
+fn test_context_usage() {
+    let mut matcher = Matcher::<i32, TestContext>::new(10);
 
-    matcher.add_pattern(
-        "error_pattern".to_string(),
-        vec![PatternElement::Value {
-            value: 42,
-            settings: Some(ElementSettings::new().extractor(Box::new(|_| {
-                Err(ExtractorError::Message("Test error".to_string()))
-            }))),
-        }],
+    let context = TestContext {
+        name: "test_context".to_string(),
+        captured_values: vec![],
+    };
+    matcher.set_context(context);
+
+    // Register an extractor that uses context
+    matcher.register_extractor(1, |state| {
+        Ok(ExtractorAction::Extract(state.current_item + 100))
+    });
+
+    let mut settings = ElementSettings::default();
+    settings.extractor_id = Some(1);
+    matcher.add_pattern(PatternElement::exact_with_settings(5, settings));
+
+    assert_eq!(matcher.process_item(5).unwrap(), Some(105));
+}
+
+#[test]
+fn test_process_multiple_items() {
+    let mut matcher = Matcher::<i32, TestContext>::new(10);
+    matcher.add_pattern(PatternElement::exact(1));
+    matcher.add_pattern(PatternElement::exact(2));
+
+    let items = vec![1, 2, 3, 1, 2, 4, 5];
+    let results = matcher.process_items(items).unwrap();
+
+    // Should find pattern [1,2] twice
+    assert_eq!(results, vec![2, 2]);
+}
+
+#[test]
+fn test_string_patterns() {
+    let mut matcher = Matcher::<String, TestContext>::new(10);
+    matcher.add_pattern(PatternElement::exact("hello".to_string()));
+    matcher.add_pattern(PatternElement::exact("world".to_string()));
+
+    assert_eq!(matcher.process_item("hello".to_string()).unwrap(), None);
+    assert_eq!(
+        matcher.process_item("world".to_string()).unwrap(),
+        Some("world".to_string())
     );
+}
 
-    let window = vec![42];
-    let result = matcher.run(&window);
+#[test]
+fn test_complex_mixed_patterns() {
+    let mut matcher = Matcher::<i32, TestContext>::new(10);
+
+    // Pattern: exact(1), even number, range(10-20)
+    matcher.add_pattern(PatternElement::exact(1));
+    matcher.add_pattern(PatternElement::predicate(|x| *x % 2 == 0));
+    matcher.add_pattern(PatternElement::range(10, 20));
+
+    assert_eq!(matcher.process_item(1).unwrap(), None); // Match first
+    assert_eq!(matcher.process_item(8).unwrap(), None); // Match second
+    assert_eq!(matcher.process_item(15).unwrap(), Some(15)); // Complete pattern
+}
+
+#[test]
+fn test_window_size_constructor() {
+    let patterns = vec![PatternElement::exact(1), PatternElement::exact(2)];
+
+    let matcher = Matcher::<i32, TestContext>::with_patterns(patterns, 20);
+    assert_eq!(matcher.window_size(), 20);
+    assert_eq!(matcher.pattern_count(), 2);
+}
+
+#[test]
+fn test_no_patterns_error() {
+    let mut matcher = Matcher::<i32, TestContext>::new(10);
+
+    // Should error when trying to process without any patterns
+    let result = matcher.process_item(1);
     assert!(result.is_err());
 }
 
 #[test]
-fn test_pattern_element_debug() {
-    let element = PatternElement::Value {
-        value: 42,
-        settings: Some(ElementSettings::new()),
-    };
+fn test_extractor_restart_action() {
+    let mut matcher = Matcher::<i32, TestContext>::new(10);
 
-    let debug_str = format!("{:?}", element);
-    assert!(debug_str.contains("Value"));
-    assert!(debug_str.contains("42"));
-}
+    // Register an extractor that restarts on value 5
+    matcher.register_extractor(1, |state| {
+        if state.current_item == 5 {
+            Ok(ExtractorAction::Restart)
+        } else {
+            Ok(ExtractorAction::Continue)
+        }
+    });
 
-#[test]
-fn test_complex_pattern_sequence() {
-    let mut matcher = Matcher::new();
+    let mut settings = ElementSettings::default();
+    settings.extractor_id = Some(1);
+    matcher.add_pattern(PatternElement::exact_with_settings(5, settings));
 
-    // Pattern: even number followed by value 5, then any item
-    matcher.add_pattern(
-        "complex_sequence".to_string(),
-        vec![
-            PatternElement::Function {
-                function: Box::new(|x: &i32| *x % 2 == 0),
-                settings: None,
-            },
-            PatternElement::Value {
-                value: 5,
-                settings: None,
-            },
-            PatternElement::Any { settings: None },
-        ],
-    );
-
-    let window = vec![2, 5, 8, 1, 3];
-    let result = matcher.run(&window);
-    assert!(result.is_ok());
-}
-
-#[test]
-fn test_pattern_not_matching() {
-    let mut matcher = Matcher::new();
-    matcher.add_pattern(
-        "find_999".to_string(),
-        vec![PatternElement::Value {
-            value: 999,
-            settings: None,
-        }],
-    );
-
-    let window = vec![1, 2, 3, 4, 5];
-    let result = matcher.run(&window);
-    // Should succeed even when no patterns match
-    assert!(result.is_ok());
-}
-
-#[test]
-fn test_greedy_matching() {
-    let mut matcher = Matcher::new();
-    matcher.add_pattern(
-        "greedy_ones".to_string(),
-        vec![PatternElement::Value {
-            value: 1,
-            settings: Some(
-                ElementSettings::new()
-                    .min_repeat(1)
-                    .max_repeat(4)
-                    .greedy(true),
-            ),
-        }],
-    );
-
-    let window = vec![1, 1, 1, 1, 2];
-    let result = matcher.run(&window);
-    assert!(result.is_ok());
-}
-
-#[test]
-fn test_non_greedy_matching() {
-    let mut matcher = Matcher::new();
-    matcher.add_pattern(
-        "non_greedy_ones".to_string(),
-        vec![PatternElement::Value {
-            value: 1,
-            settings: Some(
-                ElementSettings::new()
-                    .min_repeat(1)
-                    .max_repeat(4)
-                    .greedy(false),
-            ),
-        }],
-    );
-
-    let window = vec![1, 1, 1, 1, 2];
-    let result = matcher.run(&window);
-    assert!(result.is_ok());
+    // Should restart and return None
+    assert_eq!(matcher.process_item(5).unwrap(), None);
+    assert_eq!(matcher.current_position(), 0); // Should be reset
 }
