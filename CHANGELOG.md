@@ -8,12 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [3.0.1] - 2025-08-28
 
 ### Fixed
+
 - Updated all documentation to reflect unified architecture
 - Cleaned up development and backup files for release
 - Enhanced library-level documentation with comprehensive examples
 - Improved CHANGELOG, BORROWING_SOLUTION, and stateful extraction documentation
 
 ### Technical Details
+
 - All 55 tests continue to pass (29 unit + 26 integration tests)
 - All 4 examples updated and working correctly
 - Project structure cleaned for production release
